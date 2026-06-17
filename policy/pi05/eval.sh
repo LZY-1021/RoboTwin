@@ -2,6 +2,9 @@
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.4 # ensure GPU < 24G
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+export PYTHONPATH="${SCRIPT_DIR}/src:${SCRIPT_DIR}/packages/openpi-client/src:${SCRIPT_DIR}:${PYTHONPATH}"
+
 policy_name=pi05
 task_name=${1}
 task_config=${2}
@@ -25,4 +28,4 @@ python script/eval_policy.py --config policy/$policy_name/deploy_policy.yml \
     --model_name ${model_name} \
     --ckpt_setting ${model_name} \
     --seed ${seed} \
-    --policy_name ${policy_name} 
+    --policy_name ${policy_name}
