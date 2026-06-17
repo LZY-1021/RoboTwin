@@ -1,0 +1,7 @@
+# One task per line.
+# Format: task_name [task_config] [test_num]
+# If task_config or test_num is omitted, the script-level default is used.
+
+adjust_bottle
+beat_block_hammer
+click_bell

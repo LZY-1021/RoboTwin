@@ -19,6 +19,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from typing import Callable, Optional, Union
 
 import torch
@@ -44,6 +45,23 @@ from .configuration_gemma import GemmaConfig
 
 
 logger = logging.get_logger(__name__)
+
+
+_PI0_PREFIX_SEQ_LEN = 968
+
+
+def _pi0_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _pi0_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
 
 
 class GemmaRMSNorm(nn.Module):
@@ -122,6 +140,65 @@ class GemmaMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
+        if os.environ.get("PI0_MLP_REUSE", "0") == "1" and x.ndim == 3 and x.shape[1] == _PI0_PREFIX_SEQ_LEN:
+            prev_x = getattr(self, "_pi0_mlp_prev_x", None)
+            prev_y = getattr(self, "_pi0_mlp_prev_y", None)
+            if prev_x is not None and prev_y is not None and prev_x.shape == x.shape and prev_y.shape[:2] == x.shape[:2]:
+                rel_threshold = _pi0_env_float("PI0_MLP_REUSE_REL_THRESHOLD", 0.02)
+                min_skip_ratio = _pi0_env_float("PI0_MLP_REUSE_MIN_SKIP_RATIO", 0.0)
+                collect_stats = os.environ.get("PI0_MLP_REUSE_STATS", "0") == "1" or min_skip_ratio > 0.0
+                delta = (x.float() - prev_x.float()).pow(2).mean(dim=-1).sqrt()
+                base = x.float().pow(2).mean(dim=-1).sqrt().clamp_min(1e-6)
+                changed = (delta / base) > rel_threshold
+                if collect_stats:
+                    changed_count = int(changed.sum().item())
+                    total_count = changed.numel()
+                    skip_ratio = 1.0 - changed_count / max(total_count, 1)
+                    self._pi0_mlp_reuse_last = {
+                        "layer": int(getattr(self, "_pi0_layer_idx", -1)),
+                        "changed_tokens": changed_count,
+                        "total_tokens": total_count,
+                        "skip_ratio": skip_ratio,
+                        "rel_threshold": rel_threshold,
+                    }
+                else:
+                    skip_ratio = 1.0
+                if skip_ratio >= min_skip_ratio:
+                    out = getattr(self, "_pi0_mlp_out_buffer", None)
+                    if out is None or out.shape != prev_y.shape or out.dtype != prev_y.dtype or out.device != prev_y.device:
+                        out = torch.empty_like(prev_y)
+                        self._pi0_mlp_out_buffer = out
+                    out.copy_(prev_y)
+                    changed_x = x[changed]
+                    changed_y = self.down_proj(self.act_fn(self.gate_proj(changed_x)) * self.up_proj(changed_x))
+                    out[changed] = changed_y
+                    if os.environ.get("PI0_DUMP_MLP_SPARSE", "0") == "1":
+                        layer = int(getattr(self, "_pi0_layer_idx", -1))
+                        target_layer = _pi0_env_int("PI0_DUMP_MLP_LAYER", layer)
+                        if layer == target_layer:
+                            tag = os.environ.get("PI0_DUMP_MLP_TAG", "sparse")
+                            torch.save(changed.detach().cpu(), f"mlp-sparse-changed-mask-{tag}-layer{layer}.pt")
+                            torch.save(changed_x.detach().cpu(), f"mlp-sparse-changed-x-{tag}-layer{layer}.pt")
+                            torch.save(changed_y.detach().cpu(), f"mlp-sparse-changed-y-{tag}-layer{layer}.pt")
+                            torch.save(prev_y.detach().cpu(), f"mlp-sparse-prev-y-{tag}-layer{layer}.pt")
+                            torch.save(out.detach().cpu(), f"mlp-sparse-out-{tag}-layer{layer}.pt")
+                    if os.environ.get("PI0_MLP_REUSE_UPDATE_CACHE", "1") == "1":
+                        self._pi0_mlp_prev_x = x.detach().clone()
+                        self._pi0_mlp_prev_y = out.detach().clone()
+                    return out
+
+            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+            self._pi0_mlp_prev_x = x.detach().clone()
+            self._pi0_mlp_prev_y = down_proj.detach().clone()
+            self._pi0_mlp_reuse_last = {
+                "layer": int(getattr(self, "_pi0_layer_idx", -1)),
+                "changed_tokens": x.shape[0] * x.shape[1],
+                "total_tokens": x.shape[0] * x.shape[1],
+                "skip_ratio": 0.0,
+                "rel_threshold": _pi0_env_float("PI0_MLP_REUSE_REL_THRESHOLD", 0.02),
+            }
+            return down_proj
+
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
@@ -337,6 +414,7 @@ class GemmaDecoderLayer(GradientCheckpointingLayer):
         self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
 
         self.mlp = GemmaMLP(config)
+        self.mlp._pi0_layer_idx = layer_idx
         cond_dim = getattr(config, 'adarms_cond_dim', None) if getattr(config, 'use_adarms', False) else None
         self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
         self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
@@ -553,6 +631,67 @@ class GemmaModel(GemmaPreTrainedModel):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
+
+    def prepare_forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        position_ids: torch.LongTensor,
+        adarms_cond: Optional[torch.Tensor] = None,
+    ) -> dict:
+        if len(self.layers) > 0 and self.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16:
+            inputs_embeds = inputs_embeds.to(torch.bfloat16)
+
+        cache = DynamicCache()
+        cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=cache,
+            position_ids=position_ids,
+        )
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        return {
+            "hidden_states": inputs_embeds,
+            "causal_mask": causal_mask,
+            "position_ids": position_ids,
+            "position_embeddings": position_embeddings,
+            "cache_position": cache_position,
+            "cache": cache,
+            "adarms_cond": adarms_cond,
+        }
+
+    def forward_layers(
+        self,
+        hidden_states: torch.Tensor,
+        ctx: dict,
+        layer_start: int,
+        layer_end: int,
+    ) -> torch.Tensor:
+        for layer_idx in range(layer_start, min(layer_end, self.config.num_hidden_layers)):
+            layer_outputs = self.layers[layer_idx](
+                hidden_states,
+                attention_mask=ctx["causal_mask"],
+                position_ids=ctx["position_ids"],
+                past_key_value=ctx["cache"],
+                output_attentions=False,
+                use_cache=True,
+                cache_position=ctx["cache_position"],
+                position_embeddings=ctx["position_embeddings"],
+                adarms_cond=ctx["adarms_cond"],
+            )
+            hidden_states = layer_outputs[0]
+        ctx["hidden_states"] = hidden_states
+        return hidden_states
+
+    def finalize(self, hidden_states: torch.Tensor, ctx: dict) -> torch.Tensor:
+        hidden_states, _ = self.norm(hidden_states, ctx["adarms_cond"])
+        return hidden_states
+
+    def get_accumulated_cache(self, ctx: dict) -> DynamicCache:
+        return ctx["cache"]
 
 
 class KwargsForCausalLM(FlashAttentionKwargs, LossKwargs): ...

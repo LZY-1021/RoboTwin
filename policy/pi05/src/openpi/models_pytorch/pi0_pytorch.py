@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 
 import torch
 from torch import Tensor
@@ -109,7 +110,12 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
-        self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
+        self._denoise_kv_mode = os.environ.get("PI05_DENOISE_KV_MODE", "fresh").lower()
+        self._last_prefix_pad_masks = None
+        self._last_past_key_values = None
+        self._last_kv_mode_stats = None
+        if self._denoise_kv_mode == "fresh":
+            self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
@@ -390,6 +396,34 @@ class PI0Pytorch(nn.Module):
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
+        if self._denoise_kv_mode in {"layer_accumulate", "layerwise", "layer_accum"} and self._has_previous_prefix(
+            prefix_pad_masks
+        ):
+            return self._sample_actions_layer_accumulate(
+                device,
+                bsize,
+                state,
+                noise,
+                num_steps,
+                prefix_embs,
+                prefix_pad_masks,
+                prefix_att_2d_masks_4d,
+                prefix_position_ids,
+            )
+
+        if self._denoise_kv_mode in {"step_cutoff", "cutoff"} and self._has_previous_prefix(prefix_pad_masks):
+            return self._sample_actions_step_cutoff(
+                device,
+                bsize,
+                state,
+                noise,
+                num_steps,
+                prefix_embs,
+                prefix_pad_masks,
+                prefix_att_2d_masks_4d,
+                prefix_position_ids,
+            )
+
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
@@ -397,18 +431,36 @@ class PI0Pytorch(nn.Module):
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        past_key_values = self._past_key_values_to_tuple(past_key_values)
 
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
+        if self._denoise_kv_mode in {"fresh", "current", "new"}:
+            x_t = self._run_denoise_step_range(
+                0, num_steps, x_t, state, prefix_pad_masks, past_key_values, num_steps, device, bsize
+            )
+            return x_t
+
+        step_idx = 0
+        kv_mode = self._denoise_kv_mode
+        old_cache_ok = self._can_reuse_previous_kv(prefix_pad_masks, past_key_values)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
+            step_past_key_values, step_prefix_pad_masks = self._select_denoise_kv(
+                kv_mode,
+                step_idx,
+                num_steps,
                 prefix_pad_masks,
                 past_key_values,
+                old_cache_ok,
+            )
+            v_t = self.denoise_step(
+                state,
+                step_prefix_pad_masks,
+                step_past_key_values,
                 x_t,
                 expanded_time,
             )
@@ -416,7 +468,208 @@ class PI0Pytorch(nn.Module):
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
             time += dt
+            step_idx += 1
+        self._last_prefix_pad_masks = prefix_pad_masks.detach()
+        self._last_past_key_values = self._detach_past_key_values(past_key_values)
         return x_t
+
+    def _run_prefix_kv(self, prefix_embs, prefix_att_2d_masks_4d, prefix_position_ids):
+        _, past_key_values = self.paligemma_with_expert.forward(
+            attention_mask=prefix_att_2d_masks_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
+        )
+        return self._past_key_values_to_tuple(past_key_values)
+
+    def _run_denoise_step_range(
+        self,
+        step_start: int,
+        step_end: int,
+        x_t,
+        state,
+        prefix_pad_masks,
+        past_key_values,
+        num_steps: int,
+        device,
+        bsize: int,
+    ):
+        dt = -1.0 / num_steps
+        for step_idx in range(step_start, step_end):
+            timestep = torch.tensor(1.0 + step_idx * dt, dtype=torch.float32, device=device).expand(bsize)
+            v_t = self.denoise_step(
+                state,
+                prefix_pad_masks,
+                past_key_values,
+                x_t,
+                timestep,
+            )
+            x_t = x_t + dt * v_t
+        return x_t
+
+    def _sample_actions_step_cutoff(
+        self,
+        device,
+        bsize: int,
+        state,
+        noise,
+        num_steps: int,
+        prefix_embs,
+        prefix_pad_masks,
+        prefix_att_2d_masks_4d,
+        prefix_position_ids,
+    ):
+        cutoff = min(num_steps, max(0, int(os.environ.get("PI05_DENOISE_KV_CUTOFF_STEP", "5"))))
+        x_t = self._run_denoise_step_range(
+            0, cutoff, noise, state, self._last_prefix_pad_masks, self._last_past_key_values, num_steps, device, bsize
+        )
+        current_past_key_values = self._run_prefix_kv(prefix_embs, prefix_att_2d_masks_4d, prefix_position_ids)
+        x_t = self._run_denoise_step_range(
+            cutoff, num_steps, x_t, state, prefix_pad_masks, current_past_key_values, num_steps, device, bsize
+        )
+        self._last_prefix_pad_masks = prefix_pad_masks.detach()
+        self._last_past_key_values = self._detach_past_key_values(current_past_key_values)
+        self._last_kv_mode_stats = {"mode": "step_cutoff", "cutoff": cutoff}
+        return x_t
+
+    def _sample_actions_layer_accumulate(
+        self,
+        device,
+        bsize: int,
+        state,
+        noise,
+        num_steps: int,
+        prefix_embs,
+        prefix_pad_masks,
+        prefix_att_2d_masks_4d,
+        prefix_position_ids,
+    ):
+        language_model = self.paligemma_with_expert.paligemma.language_model
+        layers_per_step = max(1, int(os.environ.get("PI05_DENOISE_KV_LAYERS_PER_STEP", "2")))
+        start_layers = max(0, int(os.environ.get("PI05_DENOISE_KV_INITIAL_CURRENT_LAYERS", "0")))
+        total_layers = len(language_model.layers)
+        ctx = language_model.prepare_forward(prefix_embs, prefix_att_2d_masks_4d, prefix_position_ids)
+        hidden_states = ctx["hidden_states"]
+        current_layer_count = 0
+        x_t = noise
+        dt = -1.0 / num_steps
+
+        for step_idx in range(num_steps):
+            target_layer_count = min(total_layers, start_layers + (step_idx + 1) * layers_per_step)
+            if target_layer_count > current_layer_count:
+                hidden_states = language_model.forward_layers(
+                    hidden_states, ctx, current_layer_count, target_layer_count
+                )
+                current_layer_count = target_layer_count
+            current_partial_kv = self._past_key_values_to_tuple(language_model.get_accumulated_cache(ctx))
+            mixed_past_key_values = self._mix_past_key_values(
+                current_partial_kv,
+                self._last_past_key_values,
+                current_layer_count,
+            )
+            timestep = torch.tensor(1.0 + step_idx * dt, dtype=torch.float32, device=device).expand(bsize)
+            v_t = self.denoise_step(
+                state,
+                prefix_pad_masks,
+                mixed_past_key_values,
+                x_t,
+                timestep,
+            )
+            x_t = x_t + dt * v_t
+
+        if current_layer_count < total_layers:
+            hidden_states = language_model.forward_layers(hidden_states, ctx, current_layer_count, total_layers)
+        language_model.finalize(hidden_states, ctx)
+        current_past_key_values = self._past_key_values_to_tuple(language_model.get_accumulated_cache(ctx))
+        self._last_prefix_pad_masks = prefix_pad_masks.detach()
+        self._last_past_key_values = self._detach_past_key_values(current_past_key_values)
+        self._last_kv_mode_stats = {
+            "mode": "layer_accumulate",
+            "layers_per_step": layers_per_step,
+            "total_layers": total_layers,
+        }
+        return x_t
+
+    def _has_previous_prefix(self, prefix_pad_masks) -> bool:
+        return self._last_prefix_pad_masks is not None and self._last_prefix_pad_masks.shape == prefix_pad_masks.shape
+
+    def _past_key_values_to_tuple(self, past_key_values):
+        if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
+            return tuple(zip(past_key_values.key_cache, past_key_values.value_cache, strict=True))
+        return tuple((layer[0], layer[1]) for layer in past_key_values)
+
+    def _can_reuse_previous_kv(self, prefix_pad_masks, past_key_values) -> bool:
+        prev_masks = self._last_prefix_pad_masks
+        prev_kv = self._last_past_key_values
+        if prev_masks is None or prev_kv is None:
+            return False
+        if prev_masks.shape != prefix_pad_masks.shape:
+            return False
+        if len(prev_kv) != len(past_key_values):
+            return False
+        for old_layer, new_layer in zip(prev_kv, past_key_values, strict=True):
+            if old_layer[0].shape != new_layer[0].shape or old_layer[1].shape != new_layer[1].shape:
+                return False
+        return True
+
+    def _detach_past_key_values(self, past_key_values):
+        return tuple((k.detach(), v.detach()) for k, v in past_key_values)
+
+    def _mix_past_key_values(self, current_past_key_values, previous_past_key_values, current_layer_count: int):
+        mixed = []
+        for layer_idx, previous_layer in enumerate(previous_past_key_values):
+            if layer_idx < current_layer_count and layer_idx < len(current_past_key_values):
+                mixed.append(current_past_key_values[layer_idx])
+            else:
+                mixed.append(previous_layer)
+        return tuple(mixed)
+
+    def _select_denoise_kv(
+        self,
+        kv_mode: str,
+        step_idx: int,
+        num_steps: int,
+        current_prefix_pad_masks,
+        current_past_key_values,
+        old_cache_ok: bool,
+    ):
+        if kv_mode in {"fresh", "current", "new"} or not old_cache_ok:
+            self._last_kv_mode_stats = {"mode": "fresh", "step": step_idx, "current_layers": len(current_past_key_values)}
+            return current_past_key_values, current_prefix_pad_masks
+
+        previous_prefix_pad_masks = self._last_prefix_pad_masks
+        previous_past_key_values = self._last_past_key_values
+
+        if kv_mode in {"step_cutoff", "cutoff"}:
+            cutoff = int(os.environ.get("PI05_DENOISE_KV_CUTOFF_STEP", "5"))
+            if step_idx < cutoff:
+                self._last_kv_mode_stats = {"mode": "step_cutoff_old", "step": step_idx, "cutoff": cutoff}
+                return previous_past_key_values, previous_prefix_pad_masks
+            self._last_kv_mode_stats = {"mode": "step_cutoff_fresh", "step": step_idx, "cutoff": cutoff}
+            return current_past_key_values, current_prefix_pad_masks
+
+        if kv_mode in {"layer_accumulate", "layerwise", "layer_accum"}:
+            total_layers = len(current_past_key_values)
+            layers_per_step = int(os.environ.get("PI05_DENOISE_KV_LAYERS_PER_STEP", "2"))
+            start_layers = int(os.environ.get("PI05_DENOISE_KV_INITIAL_CURRENT_LAYERS", "0"))
+            current_layer_count = min(total_layers, start_layers + (step_idx + 1) * max(1, layers_per_step))
+            mixed_past_key_values = self._mix_past_key_values(
+                current_past_key_values,
+                previous_past_key_values,
+                current_layer_count,
+            )
+            self._last_kv_mode_stats = {
+                "mode": "layer_accumulate",
+                "step": step_idx,
+                "current_layers": current_layer_count,
+                "total_layers": total_layers,
+            }
+            return mixed_past_key_values, current_prefix_pad_masks
+
+        raise ValueError(
+            "Unsupported PI05_DENOISE_KV_MODE. Use fresh, layer_accumulate, or step_cutoff."
+        )
 
     def denoise_step(
         self,
