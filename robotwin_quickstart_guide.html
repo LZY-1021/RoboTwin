@@ -1,0 +1,1304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTwin 快速上手与自定义指南</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --paper: #ffffff;
+      --ink: #20242a;
+      --muted: #626b78;
+      --line: #d9dee7;
+      --blue: #2864b4;
+      --green: #237356;
+      --red: #a13d45;
+      --amber: #8a651f;
+      --code-bg: #101820;
+      --code-ink: #e8eef6;
+      --soft-blue: #e9f1fb;
+      --soft-green: #e8f4ee;
+      --soft-amber: #fbf3df;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+      line-height: 1.68;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: #eef2f6;
+      padding: 28px 22px;
+    }
+
+    aside h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    aside p {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: #26313f;
+      font-size: 14px;
+    }
+
+    nav a:hover {
+      background: #dde6f1;
+      text-decoration: none;
+    }
+
+    main {
+      max-width: 1080px;
+      padding: 42px 52px 72px;
+    }
+
+    .hero {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+
+    .hero h2 {
+      margin: 0 0 10px;
+      font-size: 34px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 820px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    section {
+      margin: 36px 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 25px;
+      line-height: 1.3;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+    }
+
+    p {
+      margin: 10px 0;
+    }
+
+    ul, ol {
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #e8edf3;
+      color: #17202c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px 18px;
+      overflow: auto;
+      border-radius: 8px;
+      background: var(--code-bg);
+      color: var(--code-ink);
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      display: table;
+    }
+
+    th, td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef3f8;
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px 18px;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .video-gallery {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .video-item {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .video-item summary {
+      cursor: pointer;
+      padding: 11px 13px;
+      font-weight: 700;
+      color: #26313f;
+      background: #eef3f8;
+    }
+
+    .video-item video {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #111820;
+    }
+
+    .video-meta {
+      margin: 0;
+      padding: 8px 12px 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tag {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #1f2a36;
+      background: #e6ebf1;
+    }
+
+    .tag.core {
+      background: var(--soft-blue);
+      color: #194f91;
+    }
+
+    .tag.edit {
+      background: var(--soft-green);
+      color: #1d654b;
+    }
+
+    .tag.warn {
+      background: var(--soft-amber);
+      color: #76530e;
+    }
+
+    .note {
+      border-left: 4px solid var(--blue);
+      background: var(--soft-blue);
+      padding: 12px 15px;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .ok {
+      border-left-color: var(--green);
+      background: var(--soft-green);
+    }
+
+    .warn-box {
+      border-left-color: var(--amber);
+      background: var(--soft-amber);
+    }
+
+    .tree {
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .kbd {
+      border: 1px solid #bdc6d2;
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      padding: 1px 5px;
+      background: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    @media (max-width: 860px) {
+      .layout {
+        display: block;
+      }
+
+      aside {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      main {
+        padding: 30px 20px 54px;
+      }
+
+      .hero h2 {
+        font-size: 28px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .video-gallery {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <h1>RoboTwin 指南</h1>
+      <p>本地归档版，面向快速上手和后续自定义修改。</p>
+      <nav>
+        <a href="#overview">1. 仓库一句话理解</a>
+        <a href="#map">2. 顶层结构地图</a>
+        <a href="#flow">3. 数据采集主流程</a>
+        <a href="#task">4. 任务环境怎么写</a>
+        <a href="#task-catalog">5. 50 个任务具体是什么</a>
+        <a href="#config">6. 配置系统</a>
+        <a href="#robot">7. 机器人与控制</a>
+        <a href="#data">8. 数据格式</a>
+        <a href="#policy">9. Policy 接入与评测</a>
+        <a href="#policy-adapt">10. 不同 policy 怎么适配</a>
+        <a href="#custom">11. 自定义修改路线</a>
+        <a href="#study">12. 推荐学习路径</a>
+        <a href="#checklist">13. 动手检查清单</a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="hero">
+        <h2>RoboTwin 快速上手与自定义指南</h2>
+        <p>
+          这份文档把 RoboTwin 2.0 仓库整理成一张可操作地图：你先知道每块代码负责什么，
+          再沿着数据采集、任务开发、policy 部署三条线逐步改到自己想要的程度。
+        </p>
+      </div>
+
+      <section id="overview">
+        <h2>1. 仓库一句话理解</h2>
+        <p>
+          RoboTwin 是一个双臂机器人操作 benchmark 和数据生成平台。它把
+          <code>仿真任务</code>、<code>专家示教</code>、<code>数据采集</code>、
+          <code>语言指令生成</code>、<code>policy 训练/部署/评测</code> 放在同一个仓库里。
+        </p>
+        <div class="note">
+          最核心的链路是：
+          <strong>envs 任务环境</strong> -> <strong>play_once 专家轨迹</strong> ->
+          <strong>collect_data 保存 hdf5</strong> -> <strong>policy baseline 训练</strong> ->
+          <strong>eval_policy 部署评测</strong>。
+        </div>
+      </section>
+
+      <section id="map">
+        <h2>2. 顶层结构地图</h2>
+        <div class="card tree">RoboTwin/
+├── README.md                         项目说明、安装、使用、baseline 链接
+├── collect_data.sh                   数据采集 shell 入口
+├── envs/                             仿真环境和任务定义，最核心
+│   ├── _base_task.py                 Base_Task，任务运行时内核
+│   ├── robot/                        机器人加载、关节、夹爪、规划器
+│   ├── camera/                       相机封装
+│   ├── utils/                        创建物体、保存数据、动作封装等工具
+│   └── move_can_pot.py 等             每个任务一个文件
+├── task_config/                      采集/评测配置
+│   ├── demo_clean.yml
+│   ├── demo_randomized.yml
+│   ├── _camera_config.yml
+│   └── _embodiment_config.yml
+├── script/                           Python 主入口脚本
+│   ├── collect_data.py               采 seed、重放、保存 hdf5
+│   └── eval_policy.py                policy 评测主循环
+├── policy/                           DP、DP3、ACT、RDT、pi0、pi05、VLA 等
+│   └── Your_Policy/                  接入你自己模型的模板
+├── description/                      任务语言指令模板和生成工具
+├── assets/                           机器人、物体、纹理等资源
+└── data/                             默认采集数据输出目录</div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>目录/文件</th>
+              <th>作用</th>
+              <th>你通常怎么改</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>envs/*.py</code></td>
+              <td>具体任务：加载物体、专家动作、成功判断。</td>
+              <td>自定义任务、调整随机范围、改成功标准。</td>
+            </tr>
+            <tr>
+              <td><code>envs/_base_task.py</code></td>
+              <td>建 SAPIEN 场景、加载机器人/相机、采观察、执行动作。</td>
+              <td>一般先不要大改；需要新增控制模式或数据字段时再改。</td>
+            </tr>
+            <tr>
+              <td><code>task_config/*.yml</code></td>
+              <td>episode 数、随机化、相机、数据类型、embodiment。</td>
+              <td>最适合入门调整。</td>
+            </tr>
+            <tr>
+              <td><code>script/collect_data.py</code></td>
+              <td>采集主流程：找成功 seed，再重放保存数据。</td>
+              <td>想改采集流程、保存逻辑、失败重试策略时看它。</td>
+            </tr>
+            <tr>
+              <td><code>script/eval_policy.py</code></td>
+              <td>评测主流程：加载任务、加载 policy、循环执行动作。</td>
+              <td>改评测次数、视频保存、instruction 选择、结果记录。</td>
+            </tr>
+            <tr>
+              <td><code>policy/Your_Policy</code></td>
+              <td>接自己模型的模板。</td>
+              <td>实现 <code>get_model</code>、<code>eval</code>、<code>reset_model</code>。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="flow">
+        <h2>3. 数据采集主流程</h2>
+        <p>最常用命令：</p>
+        <pre><code>cd /mnt/disk1/shared_data/lzy/RoboTwin
+bash collect_data.sh move_can_pot demo_randomized 0</code></pre>
+
+        <p>它实际做的事情：</p>
+        <ol>
+          <li><code>collect_data.sh</code> 接收 <code>task_name</code>、<code>task_config</code>、<code>gpu_id</code>。</li>
+          <li>调用 <code>script/.update_path.sh</code> 更新资源路径。</li>
+          <li>设置 <code>CUDA_VISIBLE_DEVICES</code>。</li>
+          <li>运行 <code>python script/collect_data.py task_name task_config</code>。</li>
+          <li>清理 <code>data/task/config/.cache</code>。</li>
+        </ol>
+
+        <h3><code>script/collect_data.py</code> 的两阶段逻辑</h3>
+        <div class="grid">
+          <div class="card">
+            <h3><span class="tag core">阶段 1</span> 搜索成功 seed</h3>
+            <p>
+              当 <code>use_seed: false</code> 时，脚本会不断尝试不同随机种子。
+              每个 seed 都会创建场景，运行任务的 <code>play_once()</code> 专家轨迹，
+              然后用 <code>check_success()</code> 判断是否成功。
+            </p>
+            <p>
+              成功的 seed 会写入 <code>seed.txt</code>，专家关节路径会保存到
+              <code>_traj_data/episode*.pkl</code>。
+            </p>
+          </div>
+          <div class="card">
+            <h3><span class="tag core">阶段 2</span> 重放并保存数据</h3>
+            <p>
+              脚本读取已成功的 seed 和轨迹，关闭重新规划，重放专家路径。
+              这时 <code>save_data: true</code>，每隔 <code>save_freq</code>
+              保存 observation。
+            </p>
+            <p>
+              输出包括 <code>data/episode*.hdf5</code>、
+              <code>video/episode*.mp4</code>、<code>scene_info.json</code>。
+            </p>
+          </div>
+        </div>
+
+        <div class="note ok">
+          这个设计的重点是可复现：先找到成功 seed 和轨迹，再重放保存数据。之后同样配置下可以复用 seed。
+        </div>
+      </section>
+
+      <section id="task">
+        <h2>4. 任务环境怎么写</h2>
+        <p>
+          每个任务继承 <code>Base_Task</code>。建议先读
+          <code>envs/move_can_pot.py</code>，它结构很清楚。
+        </p>
+
+        <pre><code>from ._base_task import Base_Task
+from .utils import *
+
+class my_task(Base_Task):
+    def setup_demo(self, is_test=False, **kwargs):
+        super()._init_task_env_(**kwargs)
+
+    def load_actors(self):
+        # 1. 创建或随机放置物体
+        # 2. 记录目标位姿
+        # 3. 设置禁止区域，避免杂物覆盖关键区域
+        pass
+
+    def play_once(self):
+        # 专家示教：抓取、移动、放置等
+        # 返回 self.info，供语言模板生成用
+        pass
+
+    def check_success(self):
+        # 根据物体位置、姿态、夹爪状态判断任务是否完成
+        return True</code></pre>
+
+        <table>
+          <thead>
+            <tr>
+              <th>方法</th>
+              <th>职责</th>
+              <th>典型修改</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>setup_demo()</code></td>
+              <td>调用 <code>_init_task_env_</code> 完成场景、机器人、相机、物体初始化。</td>
+              <td>大多数任务保持模板即可。</td>
+            </tr>
+            <tr>
+              <td><code>load_actors()</code></td>
+              <td>加载任务物体、随机位置、目标位置、禁止区域。</td>
+              <td>新增物体、改随机范围、改目标点。</td>
+            </tr>
+            <tr>
+              <td><code>play_once()</code></td>
+              <td>专家策略，通常用基类动作 API 拼出一段任务轨迹。</td>
+              <td>改专家动作顺序、换抓取方向、换放置路径。</td>
+            </tr>
+            <tr>
+              <td><code>check_success()</code></td>
+              <td>判断任务是否成功。</td>
+              <td>改容差、加姿态约束、加双臂状态约束。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>常用任务动作 API</h3>
+        <ul>
+          <li><code>self.move(self.grasp_actor(actor, arm_tag="left"))</code>：规划抓取某个物体。</li>
+          <li><code>self.move(self.place_actor(actor, target_pose=..., arm_tag="right"))</code>：把物体放到目标位姿。</li>
+          <li><code>self.move(self.move_by_displacement(arm_tag, x=..., y=..., z=...))</code>：末端按位移移动。</li>
+          <li><code>self.move(self.move_to_pose(arm_tag, target_pose))</code>：移动到指定末端位姿。</li>
+          <li><code>self.open_gripper(arm_tag)</code> / <code>self.close_gripper(arm_tag)</code>：开合夹爪。</li>
+          <li><code>self.back_to_origin(arm_tag)</code>：回到初始位姿。</li>
+        </ul>
+
+        <div class="note warn-box">
+          新建任务时，文件名、类名、命令里的 <code>task_name</code> 要一致。
+          例如 <code>envs/my_pick_task.py</code> 里应定义 <code>class my_pick_task(Base_Task)</code>。
+        </div>
+      </section>
+
+      <section id="task-catalog">
+        <h2>5. 50 个任务具体是什么</h2>
+        <p>
+          RoboTwin 2.0 官方文档列出了 50 个双臂任务；当前本地仓库的
+          <code>envs/</code> 与 <code>description/task_instruction/</code> 中也包含 50 个任务文件。
+          这些任务不是随意堆物体，而是在测试双臂操作里的几个核心能力：
+          <code>抓取搬运</code>、<code>双物体/多物体排序</code>、<code>工具或按钮交互</code>、
+          <code>容器放置</code>、<code>铰链/旋转/开合</code>、<code>双臂协作交接</code>。
+        </p>
+
+        <div class="note">
+          官方任务索引见
+          <a href="https://robotwin-platform.github.io/doc/tasks/index.html">50 Bimanual Tasks</a>；
+          本地任务源码都在 <code>envs/&lt;task_name&gt;.py</code>，语言模板在
+          <code>description/task_instruction/&lt;task_name&gt;.json</code>。
+        </div>
+
+        <h3>按能力分组理解任务</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>任务类别</th>
+              <th>包含任务</th>
+              <th>它在考什么</th>
+              <th>读源码重点</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>单物体抓取、搬运、放置</td>
+              <td>
+                <code>move_can_pot</code>、<code>move_stapler_pad</code>、
+                <code>move_pillbottle_pad</code>、<code>move_playingcard_away</code>、
+                <code>place_shoe</code>、<code>place_fan</code>、
+                <code>place_mouse_pad</code>、<code>place_empty_cup</code>
+              </td>
+              <td>识别目标物，选择手臂，抓起后移动到目标区域；通常是最适合入门调试的任务。</td>
+              <td><code>load_actors()</code> 里的目标位姿和 <code>check_success()</code> 的距离阈值。</td>
+            </tr>
+            <tr>
+              <td>放入容器或放到支撑物上</td>
+              <td>
+                <code>place_object_basket</code>、<code>place_can_basket</code>、
+                <code>place_cans_plasticbox</code>、<code>place_container_plate</code>、
+                <code>place_object_scale</code>、<code>place_object_stand</code>、
+                <code>place_phone_stand</code>、<code>place_bread_basket</code>、
+                <code>place_bread_skillet</code>、<code>put_bottles_dustbin</code>、
+                <code>put_object_cabinet</code>
+              </td>
+              <td>目标区域通常是篮子、锅、盘子、柜子、秤、支架等，要求放置精度和碰撞规避。</td>
+              <td>目标物/容器的 bbox、姿态约束、是否需要先打开或避开容器边缘。</td>
+            </tr>
+            <tr>
+              <td>双物体、多物体组合</td>
+              <td>
+                <code>pick_dual_bottles</code>、<code>pick_diverse_bottles</code>、
+                <code>place_dual_shoes</code>、<code>place_burger_fries</code>、
+                <code>blocks_ranking_rgb</code>、<code>blocks_ranking_size</code>、
+                <code>stack_blocks_two</code>、<code>stack_blocks_three</code>、
+                <code>stack_bowls_two</code>、<code>stack_bowls_three</code>
+              </td>
+              <td>多目标选择、顺序约束、左右手协同、堆叠稳定性；对 policy 的长时序能力更敏感。</td>
+              <td><code>play_once()</code> 的阶段划分，以及 <code>check_success()</code> 如何判断顺序/高度/相对位置。</td>
+            </tr>
+            <tr>
+              <td>按钮、开关、工具交互</td>
+              <td>
+                <code>click_alarmclock</code>、<code>click_bell</code>、
+                <code>press_stapler</code>、<code>turn_switch</code>、
+                <code>beat_block_hammer</code>、<code>stamp_seal</code>、
+                <code>scan_object</code>
+              </td>
+              <td>末端位置和姿态要对准按钮/工具接触点，有些任务用 <code>stage_success_tag</code> 记录阶段成功。</td>
+              <td>接触点、下压/敲击/扫描的运动方向，以及成功标记的触发条件。</td>
+            </tr>
+            <tr>
+              <td>铰链、开合、旋转、姿态调整</td>
+              <td>
+                <code>open_laptop</code>、<code>open_microwave</code>、
+                <code>rotate_qrcode</code>、<code>adjust_bottle</code>、
+                <code>shake_bottle</code>、<code>shake_bottle_horizontally</code>、
+                <code>lift_pot</code>、<code>dump_bin_bigbin</code>
+              </td>
+              <td>除了位置，还要控制角度、关节开合幅度、倾倒方向或摇晃轨迹。</td>
+              <td><code>check_success(target=...)</code> 里的角度阈值，和 <code>play_once()</code> 中是否有备选轨迹。</td>
+            </tr>
+            <tr>
+              <td>双臂交接、悬挂、拿取</td>
+              <td>
+                <code>handover_block</code>、<code>handover_mic</code>、
+                <code>hanging_mug</code>、<code>grab_roller</code>
+              </td>
+              <td>强调两只手的相对位姿、交接时序和夹爪开合；对 action chunk 的时序误差更敏感。</td>
+              <td>左右臂分别承担的角色、交接点位姿、释放时机。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>逐个任务速查</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>任务名</th>
+              <th>通俗解释</th>
+              <th>主要难点</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>adjust_bottle</code></td><td>把瓶子扶正或调整到目标姿态。</td><td>姿态控制、夹爪接触点。</td></tr>
+            <tr><td><code>beat_block_hammer</code></td><td>拿锤子敲击方块。</td><td>工具抓取、敲击方向和力度轨迹。</td></tr>
+            <tr><td><code>blocks_ranking_rgb</code></td><td>按红绿蓝顺序把方块从左到右排成一行。</td><td>多目标语言绑定、顺序约束。</td></tr>
+            <tr><td><code>blocks_ranking_size</code></td><td>按大小顺序排列方块。</td><td>根据尺寸选择目标，保持队列间距。</td></tr>
+            <tr><td><code>click_alarmclock</code></td><td>按下闹钟按钮。</td><td>小目标定位、下压接触。</td></tr>
+            <tr><td><code>click_bell</code></td><td>按铃。</td><td>末端姿态和按压深度。</td></tr>
+            <tr><td><code>dump_bin_bigbin</code></td><td>拿起小垃圾桶并倒入大垃圾桶。</td><td>倾倒角度、容器边缘避障。</td></tr>
+            <tr><td><code>grab_roller</code></td><td>抓取滚筒状物体。</td><td>圆柱物体抓取姿态。</td></tr>
+            <tr><td><code>handover_block</code></td><td>一只手拿方块交给另一只手。</td><td>双臂同步、交接时机。</td></tr>
+            <tr><td><code>handover_mic</code></td><td>交接麦克风。</td><td>长条物体方向和夹爪释放。</td></tr>
+            <tr><td><code>hanging_mug</code></td><td>把杯子挂到架子或挂钩上。</td><td>环形把手/挂点对齐。</td></tr>
+            <tr><td><code>lift_pot</code></td><td>抬起锅。</td><td>双侧抓取或稳定抬升。</td></tr>
+            <tr><td><code>move_can_pot</code></td><td>把罐子移动到锅旁边。</td><td>基础抓放，适合作为入门样例。</td></tr>
+            <tr><td><code>move_pillbottle_pad</code></td><td>把药瓶移动到指定垫子或区域上。</td><td>小瓶抓取、目标区域落点。</td></tr>
+            <tr><td><code>move_playingcard_away</code></td><td>把扑克牌移开。</td><td>薄片物体抓取/推动。</td></tr>
+            <tr><td><code>move_stapler_pad</code></td><td>把订书机移动到垫子上。</td><td>目标区域对齐。</td></tr>
+            <tr><td><code>open_laptop</code></td><td>打开笔记本电脑屏幕。</td><td>铰链角度、接触点沿弧线运动。</td></tr>
+            <tr><td><code>open_microwave</code></td><td>打开微波炉门。</td><td>把手抓取、铰链约束。</td></tr>
+            <tr><td><code>pick_diverse_bottles</code></td><td>从多个不同瓶子中拿起指定瓶子。</td><td>实例区分、语言目标绑定。</td></tr>
+            <tr><td><code>pick_dual_bottles</code></td><td>同时或依次拿起两个瓶子。</td><td>左右手目标分配。</td></tr>
+            <tr><td><code>place_a2b_left</code></td><td>用左侧相关手臂把物体从 A 区放到 B 区。</td><td>区域迁移、手臂选择。</td></tr>
+            <tr><td><code>place_a2b_right</code></td><td>用右侧相关手臂把物体从 A 区放到 B 区。</td><td>区域迁移、左右镜像策略。</td></tr>
+            <tr><td><code>place_bread_basket</code></td><td>把面包放入面包篮。</td><td>柔长物体放置、篮子内部落点。</td></tr>
+            <tr><td><code>place_bread_skillet</code></td><td>把面包放进煎锅。</td><td>锅内定位、边缘避障。</td></tr>
+            <tr><td><code>place_burger_fries</code></td><td>把汉堡和薯条放到对应目标区域。</td><td>双目标顺序、对象语义区分。</td></tr>
+            <tr><td><code>place_can_basket</code></td><td>把罐子放入篮子。</td><td>容器内放置和夹爪释放。</td></tr>
+            <tr><td><code>place_cans_plasticbox</code></td><td>把多个罐子放入塑料盒。</td><td>多物体重复操作、盒内空间管理。</td></tr>
+            <tr><td><code>place_container_plate</code></td><td>把容器放到盘子上。</td><td>支撑面定位、姿态稳定。</td></tr>
+            <tr><td><code>place_dual_shoes</code></td><td>把两只鞋放到指定位置。</td><td>左右鞋目标分配、姿态对齐。</td></tr>
+            <tr><td><code>place_empty_cup</code></td><td>把空杯子放到目标位置。</td><td>杯身抓取和竖直姿态。</td></tr>
+            <tr><td><code>place_fan</code></td><td>把小风扇放到指定位置。</td><td>不规则物体抓取、底座对齐。</td></tr>
+            <tr><td><code>place_mouse_pad</code></td><td>把鼠标放到鼠标垫上。</td><td>小目标区域、平面放置。</td></tr>
+            <tr><td><code>place_object_basket</code></td><td>把目标物放入篮子。</td><td>容器内部落点和碰撞。</td></tr>
+            <tr><td><code>place_object_scale</code></td><td>把物体放到电子秤上。</td><td>小平台定位、避免滑落。</td></tr>
+            <tr><td><code>place_object_stand</code></td><td>把物体放到展示架或支架上。</td><td>支架高度、姿态对齐。</td></tr>
+            <tr><td><code>place_phone_stand</code></td><td>把手机放到手机支架上。</td><td>薄板物体姿态、支架槽位对齐。</td></tr>
+            <tr><td><code>place_shoe</code></td><td>把鞋放到指定区域。</td><td>鞋子方向、底面稳定。</td></tr>
+            <tr><td><code>press_stapler</code></td><td>按压订书机。</td><td>下压行程和阶段成功判断。</td></tr>
+            <tr><td><code>put_bottles_dustbin</code></td><td>把瓶子放入垃圾桶。</td><td>多瓶抓放、容器入口定位。</td></tr>
+            <tr><td><code>put_object_cabinet</code></td><td>把物体放进柜子。</td><td>柜体空间、入口避障。</td></tr>
+            <tr><td><code>rotate_qrcode</code></td><td>旋转二维码牌或目标板到指定朝向。</td><td>平面物体旋转、角度判断。</td></tr>
+            <tr><td><code>scan_object</code></td><td>用扫描器扫描目标物。</td><td>扫描路径、距离和姿态。</td></tr>
+            <tr><td><code>shake_bottle</code></td><td>拿起瓶子并摇晃。</td><td>抓取稳定性、往复运动。</td></tr>
+            <tr><td><code>shake_bottle_horizontally</code></td><td>水平方式摇晃瓶子。</td><td>方向约束、轨迹幅度。</td></tr>
+            <tr><td><code>stack_blocks_three</code></td><td>堆叠三个方块。</td><td>长时序堆叠、误差累积。</td></tr>
+            <tr><td><code>stack_blocks_two</code></td><td>堆叠两个方块。</td><td>放置高度、上下方块中心对齐。</td></tr>
+            <tr><td><code>stack_bowls_three</code></td><td>堆叠三个碗。</td><td>曲面嵌套、连续稳定放置。</td></tr>
+            <tr><td><code>stack_bowls_two</code></td><td>堆叠两个碗。</td><td>曲面物体对齐、高度判断。</td></tr>
+            <tr><td><code>stamp_seal</code></td><td>拿印章盖章。</td><td>工具抓取、垂直下压。</td></tr>
+            <tr><td><code>turn_switch</code></td><td>拨动或旋转开关。</td><td>小幅旋转/推拉接触。</td></tr>
+          </tbody>
+        </table>
+
+        <p>
+          表里没有逐行展开的 <code>place_*</code> 任务基本都遵循同一种模式：
+          先在 <code>load_actors()</code> 创建目标物和目标容器/区域，再在
+          <code>play_once()</code> 里抓取并放置，最后在 <code>check_success()</code>
+          里判断目标物中心、姿态或高度是否落入指定范围。
+        </p>
+
+        <h3>官网任务操作视频</h3>
+        <p>
+          下面嵌入的是官网任务页的 Aloha-AgileX head camera 操作视频，采用
+          <code>preload="none"</code> 懒加载；点开某个任务才会请求对应 mp4。
+          如果要看 Franka、ARX-X5、UR5-Wsg 等本体的视频，点任务旁边的官网页面链接。
+        </p>
+
+        <div class="video-gallery">
+          <details class="video-item"><summary>adjust_bottle</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/adjust_bottle/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/adjust_bottle.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>beat_block_hammer</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/beat_block_hammer/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/beat_block_hammer.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>blocks_ranking_rgb</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/blocks_ranking_rgb/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/blocks_ranking_rgb.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>blocks_ranking_size</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/blocks_ranking_size/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/blocks_ranking_size.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>click_alarmclock</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/click_alarmclock/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/click_alarmclock.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>click_bell</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/click_bell/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/click_bell.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>dump_bin_bigbin</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/dump_bin_bigbin/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/dump_bin_bigbin.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>grab_roller</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/grab_roller/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/grab_roller.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>handover_block</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/handover_block/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/handover_block.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>handover_mic</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/handover_mic/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/handover_mic.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>hanging_mug</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/hanging_mug/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/hanging_mug.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>lift_pot</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/lift_pot/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/lift_pot.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>move_can_pot</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/move_can_pot/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/move_can_pot.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>move_pillbottle_pad</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/move_pillbottle_pad/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/move_pillbottle_pad.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>move_playingcard_away</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/move_playingcard_away/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/move_playingcard_away.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>move_stapler_pad</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/move_stapler_pad/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/move_stapler_pad.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>open_laptop</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/open_laptop/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/open_laptop.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>open_microwave</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/open_microwave/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/open_microwave.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>pick_diverse_bottles</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/pick_diverse_bottles/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/pick_diverse_bottles.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>pick_dual_bottles</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/pick_dual_bottles/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/pick_dual_bottles.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_a2b_left</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_a2b_left/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_a2b_left.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_a2b_right</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_a2b_right/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_a2b_right.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_bread_basket</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_bread_basket/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_bread_basket.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_bread_skillet</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_bread_skillet/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_bread_skillet.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_burger_fries</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_burger_fries/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_burger_fries.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_can_basket</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_can_basket/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_can_basket.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_cans_plasticbox</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_cans_plasticbox/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_cans_plasticbox.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_container_plate</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_container_plate/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_container_plate.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_dual_shoes</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_dual_shoes/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_dual_shoes.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_empty_cup</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_empty_cup/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_empty_cup.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_fan</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_fan/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_fan.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_mouse_pad</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_mouse_pad/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_mouse_pad.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_object_basket</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_object_basket/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_object_basket.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_object_scale</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_object_scale/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_object_scale.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_object_stand</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_object_stand/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_object_stand.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_phone_stand</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_phone_stand/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_phone_stand.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>place_shoe</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/place_shoe/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/place_shoe.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>press_stapler</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/press_stapler/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/press_stapler.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>put_bottles_dustbin</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/put_bottles_dustbin/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/put_bottles_dustbin.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>put_object_cabinet</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/put_object_cabinet/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/put_object_cabinet.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>rotate_qrcode</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/rotate_qrcode/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/rotate_qrcode.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>scan_object</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/scan_object/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/scan_object.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>shake_bottle</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/shake_bottle/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/shake_bottle.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>shake_bottle_horizontally</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/shake_bottle_horizontally/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/shake_bottle_horizontally.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>stack_blocks_three</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/stack_blocks_three/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/stack_blocks_three.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>stack_blocks_two</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/stack_blocks_two/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/stack_blocks_two.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>stack_bowls_three</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/stack_bowls_three/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/stack_bowls_three.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>stack_bowls_two</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/stack_bowls_two/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/stack_bowls_two.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>stamp_seal</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/stamp_seal/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/stamp_seal.html">官网任务页</a></p></details>
+          <details class="video-item"><summary>turn_switch</summary><video controls loop muted preload="none" src="https://robotwin-platform.github.io/doc/tasks/task_video_clean/turn_switch/aloha-agilex_head.mp4"></video><p class="video-meta"><a href="https://robotwin-platform.github.io/doc/tasks/turn_switch.html">官网任务页</a></p></details>
+        </div>
+      </section>
+
+      <section id="config">
+        <h2>6. 配置系统</h2>
+        <p>
+          入门阶段优先改配置，不急着改代码。常用配置文件是
+          <code>task_config/demo_clean.yml</code> 和 <code>task_config/demo_randomized.yml</code>。
+        </p>
+
+        <pre><code>render_freq: 0
+episode_num: 50
+use_seed: false
+save_freq: 15
+embodiment: [aloha-agilex]
+language_num: 100
+domain_randomization:
+  random_background: true
+  cluttered_table: true
+  clean_background_rate: 0.02
+  random_head_camera_dis: 0
+  random_table_height: 0.03
+  random_light: true
+  crazy_random_light_rate: 0.02
+camera:
+  head_camera_type: D435
+  wrist_camera_type: D435
+  collect_head_camera: true
+  collect_wrist_camera: true
+data_type:
+  rgb: true
+  depth: false
+  pointcloud: false
+  endpose: true
+  qpos: true</code></pre>
+
+        <table>
+          <thead>
+            <tr>
+              <th>字段</th>
+              <th>含义</th>
+              <th>建议</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>episode_num</code></td>
+              <td>采集 episode 数。</td>
+              <td>调试时设小，比如 1-3；正式采集再放大。</td>
+            </tr>
+            <tr>
+              <td><code>render_freq</code></td>
+              <td>是否打开 viewer 渲染。</td>
+              <td>服务器或批量采集通常为 0。</td>
+            </tr>
+            <tr>
+              <td><code>save_freq</code></td>
+              <td>每隔多少步存一帧 observation。</td>
+              <td>影响数据时间分辨率和文件大小。</td>
+            </tr>
+            <tr>
+              <td><code>embodiment</code></td>
+              <td>机器人本体选择。</td>
+              <td>单项表示双臂同一机器人；三项可表示左右不同机器人加间距。</td>
+            </tr>
+            <tr>
+              <td><code>domain_randomization</code></td>
+              <td>背景、光照、杂物、桌高、相机扰动。</td>
+              <td>先用 <code>demo_clean</code> 跑通，再用 randomized 做鲁棒性。</td>
+            </tr>
+            <tr>
+              <td><code>data_type</code></td>
+              <td>保存 RGB、depth、pointcloud、qpos、endpose、segmentation 等。</td>
+              <td>按 policy 需要开关；点云和分割会增加存储成本。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="robot">
+        <h2>7. 机器人与控制</h2>
+        <p>
+          机器人封装在 <code>envs/robot/robot.py</code>。它读取 embodiment 的
+          <code>config.yml</code>，加载 URDF，找到左右臂关节、夹爪关节、末端 link、相机 link，
+          并连接路径规划器。
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3><span class="tag core">Embodiment</span></h3>
+            <p>
+              <code>task_config/_embodiment_config.yml</code> 把名字映射到资源目录：
+              <code>aloha-agilex</code>、<code>piper</code>、<code>franka-panda</code>、
+              <code>ARX-X5</code>、<code>ur5-wsg</code> 等。
+            </p>
+          </div>
+          <div class="card">
+            <h3><span class="tag core">Planner</span></h3>
+            <p>
+              规划逻辑在 <code>envs/robot/planner.py</code>，基类任务 API 会调用
+              <code>left_plan_path</code>、<code>right_plan_path</code> 等接口。
+            </p>
+          </div>
+        </div>
+
+        <h3>评测时动作控制</h3>
+        <p><code>Base_Task.take_action(action, action_type="qpos")</code> 是 policy 部署时最重要的接口。</p>
+        <ul>
+          <li><code>qpos</code>：动作格式是 <code>[left_arm_joints + left_gripper + right_arm_joints + right_gripper]</code>。</li>
+          <li><code>ee</code>：动作格式是 <code>[left_ee_pose xyz+quat + left_gripper + right_ee_pose xyz+quat + right_gripper]</code>。</li>
+        </ul>
+      </section>
+
+      <section id="data">
+        <h2>8. 数据格式</h2>
+        <p>
+          <code>Base_Task.get_obs()</code> 负责组装 observation。最终保存到 hdf5 的内容由
+          <code>data_type</code> 控制。
+        </p>
+
+        <pre><code>{
+  "observation": {
+    "head_camera": {"rgb": ...},
+    "left_camera": {"rgb": ...},
+    "right_camera": {"rgb": ...}
+  },
+  "joint_action": {
+    "left_arm": ...,
+    "left_gripper": ...,
+    "right_arm": ...,
+    "right_gripper": ...,
+    "vector": ...
+  },
+  "endpose": {
+    "left_endpose": ...,
+    "left_gripper": ...,
+    "right_endpose": ...,
+    "right_gripper": ...
+  },
+  "pointcloud": ...
+}</code></pre>
+
+        <p>采集输出通常在：</p>
+        <pre><code>data/&lt;task_name&gt;/&lt;task_config&gt;/
+├── seed.txt
+├── _traj_data/
+│   └── episode0.pkl
+├── data/
+│   └── episode0.hdf5
+├── video/
+│   └── episode0.mp4
+└── scene_info.json</code></pre>
+      </section>
+
+      <section id="policy">
+        <h2>9. Policy 接入与评测</h2>
+        <p>
+          policy 评测主入口是 <code>script/eval_policy.py</code>。它会根据
+          <code>policy_name</code> 动态导入对应目录里的 <code>deploy_policy.py</code>。
+        </p>
+
+        <p>你自己的 policy 只需要实现三个函数：</p>
+        <pre><code>def get_model(usr_args):
+    # 加载模型 checkpoint，返回 model
+    return model
+
+def eval(TASK_ENV, model, observation):
+    # 1. 把 RoboTwin observation 编码成模型输入
+    # 2. 模型输出 action
+    # 3. 调用 TASK_ENV.take_action(action)
+    pass
+
+def reset_model(model):
+    # 每个 episode 开始时清理缓存，例如 obs window
+    pass</code></pre>
+
+        <h3>RoboTwin 的部署接口怎么工作</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>文件/函数</th>
+              <th>作用</th>
+              <th>适配时最常改的点</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>policy/&lt;Policy&gt;/deploy_policy.yml</code></td>
+              <td>保存 checkpoint 路径、模型参数、评测配置等。</td>
+              <td>把 <code>ckpt_dir</code>、<code>checkpoint_num</code>、模型名、数据模态参数写进去。</td>
+            </tr>
+            <tr>
+              <td><code>policy/&lt;Policy&gt;/eval.sh</code></td>
+              <td>把命令行参数传给 <code>script/eval_policy.py --overrides</code>。</td>
+              <td>新增你模型需要的参数，例如 <code>--model_path</code>、<code>--config_name</code>。</td>
+            </tr>
+            <tr>
+              <td><code>get_model(usr_args)</code></td>
+              <td>加载模型，返回一个可推理对象。</td>
+              <td>解析 <code>usr_args</code>，初始化 tokenizer/VLM/diffusion head/缓存窗口。</td>
+            </tr>
+            <tr>
+              <td><code>encode_obs(observation)</code></td>
+              <td>把 RoboTwin 原始 observation 变成模型输入。</td>
+              <td>RGB resize/归一化、相机名映射、点云采样、qpos 拼接、语言指令注入。</td>
+            </tr>
+            <tr>
+              <td><code>eval(TASK_ENV, model, observation)</code></td>
+              <td>一个 episode 中反复取动作并执行。</td>
+              <td>决定是否一次输出 action chunk，执行时使用 <code>qpos</code>、<code>ee</code> 或 <code>delta_ee</code>。</td>
+            </tr>
+            <tr>
+              <td><code>reset_model(model)</code></td>
+              <td>每个 episode 开始前清空状态。</td>
+              <td>清空观测缓存、时间步、temporal aggregation、RNN hidden state。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>DP baseline 的部署逻辑</h3>
+        <p>
+          <code>policy/DP/deploy_policy.py</code> 是一个很好的参考：
+          它把 <code>head_camera</code>、<code>left_camera</code>、<code>right_camera</code>
+          的 RGB 转成 channel-first，并把 <code>joint_action["vector"]</code>
+          作为机器人状态，然后让模型输出 qpos action。
+        </p>
+
+        <div class="note ok">
+          接自己模型时，不建议一开始改 <code>eval_policy.py</code> 主循环。
+          更稳的做法是只改 <code>policy/Your_Policy/deploy_policy.py</code>。
+        </div>
+      </section>
+
+      <section id="policy-adapt">
+        <h2>10. 不同 policy 怎么适配</h2>
+        <p>
+          适配不同 policy 的本质，是把同一份 RoboTwin 数据转成各算法喜欢的
+          <code>观测模态</code>、<code>动作格式</code>、<code>时间窗口</code> 和
+          <code>训练数据目录结构</code>。官方文档的 policy 页面都遵循同一节奏：
+          install -> process data -> train -> eval；本地仓库也按这个结构组织在
+          <code>policy/</code> 目录下。
+        </p>
+
+        <h3>先按输入模态选 policy</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Policy</th>
+              <th>主要输入</th>
+              <th>动作输出</th>
+              <th>数据采集要求</th>
+              <th>适合场景</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ACT</code></td>
+              <td>三路 RGB + qpos</td>
+              <td>qpos action chunk</td>
+              <td><code>data_type.rgb: true</code>，<code>qpos: true</code></td>
+              <td>入门 baseline，时序动作块清晰，部署逻辑简单。</td>
+            </tr>
+            <tr>
+              <td><code>DP</code></td>
+              <td>三路 RGB + <code>joint_action.vector</code></td>
+              <td>qpos action chunk</td>
+              <td>RGB 与 qpos 即可。</td>
+              <td>图像扩散策略，适合抓放类、容器放置类任务。</td>
+            </tr>
+            <tr>
+              <td><code>DP3</code></td>
+              <td>点云 + 机器人状态</td>
+              <td>qpos action chunk</td>
+              <td>必须采集 <code>data_type.pointcloud: true</code>；需要时开 <code>use_rgb</code> 点云颜色。</td>
+              <td>3D 几何关系重要的任务，例如放入容器、堆叠、狭窄空间放置。</td>
+            </tr>
+            <tr>
+              <td><code>RDT</code></td>
+              <td>RGB/状态/语言，按 RDT 数据处理脚本组织。</td>
+              <td>通常转成 RoboTwin qpos 执行。</td>
+              <td>先采 RoboTwin 数据，再运行 <code>policy/RDT/process_data_rdt.sh</code>。</td>
+              <td>需要语言条件和机器人扩散 transformer 时。</td>
+            </tr>
+            <tr>
+              <td><code>pi0</code> / <code>pi05</code></td>
+              <td>视觉 + 语言 + 状态，依赖对应模型仓库/权重。</td>
+              <td>动作序列，部署时转 RoboTwin action。</td>
+              <td>保留语言 instruction、RGB 和 qpos；注意 checkpoint 与 embodiment 维度。</td>
+              <td>想评估 VLA/通用策略模型在 RoboTwin 上的泛化表现。</td>
+            </tr>
+            <tr>
+              <td><code>DexVLA</code> / <code>TinyVLA</code></td>
+              <td>VLM 图像 token + 语言 + diffusion/action head。</td>
+              <td>动作 chunk。</td>
+              <td>用 <code>policy/DexVLA/process_data.py</code> 生成 <code>policy/DexVLA/data/sim_*</code> 训练数据。</td>
+              <td>需要视觉语言骨干理解任务指令，同时用动作专家输出连续控制。</td>
+            </tr>
+            <tr>
+              <td><code>openvla-oft</code> / <code>LLaVA-VLA</code></td>
+              <td>VLA 模型所需的图像、文本、状态。</td>
+              <td>按各自部署脚本转成 qpos/ee。</td>
+              <td>重点检查相机 resize、文本模板、动作归一化是否和训练一致。</td>
+              <td>接外部 VLA 模型或开放权重微调结果。</td>
+            </tr>
+            <tr>
+              <td><code>GO1</code></td>
+              <td>LeRobot 风格数据集 + GO-1 server。</td>
+              <td>通过 server/client 评测。</td>
+              <td>先 <code>robotwin2hdf5.sh</code>，再 <code>hdf52lerobot.sh</code>。</td>
+              <td>把 RoboTwin 数据迁移到 LeRobot/GO-1 训练生态。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>四条适配路线</h3>
+        <div class="grid">
+          <div class="card">
+            <h3><span class="tag core">A. 图像策略</span> ACT / DP</h3>
+            <p>
+              保留 <code>head_camera</code>、<code>left_camera</code>、<code>right_camera</code>
+              的 RGB，并把 <code>joint_action.vector</code> 或左右臂 qpos 拼成状态。
+              ACT 的本地实现会把图像 resize 到 <code>640x480</code>，DP 则转为 channel-first 后除以 255。
+            </p>
+            <pre><code>bash policy/ACT/process_data.sh beat_block_hammer demo_clean 50
+bash policy/ACT/train.sh beat_block_hammer demo_clean 50 0 0
+bash policy/ACT/eval.sh beat_block_hammer demo_randomized demo_clean 50 0 0</code></pre>
+          </div>
+
+          <div class="card">
+            <h3><span class="tag core">B. 3D 策略</span> DP3</h3>
+            <p>
+              DP3 的 <code>encode_obs()</code> 直接读取 <code>observation["pointcloud"]</code>。
+              因此采集前必须在任务配置里打开 <code>data_type.pointcloud</code>，
+              否则处理数据时容易出现空点云或除零错误。
+            </p>
+            <pre><code># task_config 中需要：
+data_type:
+  rgb: true
+  pointcloud: true
+  qpos: true
+
+bash policy/DP3/process_data.sh beat_block_hammer demo_randomized 50</code></pre>
+          </div>
+
+          <div class="card">
+            <h3><span class="tag core">C. VLA 策略</span> DexVLA / pi0 / pi05</h3>
+            <p>
+              VLA 类策略比 ACT/DP 多一个语言链路：评测时可以通过
+              <code>TASK_ENV.get_instruction()</code> 获取当前 episode 指令。
+              适配时要确认训练数据里的 instruction、相机顺序、动作归一化、checkpoint action dim
+              与当前 embodiment 一致。
+            </p>
+            <pre><code># DexVLA 数据处理示例
+cd policy/DexVLA
+python process_data.py beat_block_hammer demo_clean 50</code></pre>
+          </div>
+
+          <div class="card">
+            <h3><span class="tag core">D. 外部数据生态</span> GO1 / LeRobot</h3>
+            <p>
+              GO1 不是直接吃 RoboTwin 原始目录，而是先把 RoboTwin 轨迹转成 HDF5，
+              再转成 LeRobot dataset。它适合你想把 RoboTwin 当数据源，接到外部训练框架里。
+            </p>
+            <pre><code>cd policy/GO1
+bash robotwin2hdf5.sh beat_block_hammer demo_clean 50
+bash hdf52lerobot.sh beat_block_hammer demo_clean 50</code></pre>
+          </div>
+        </div>
+
+        <h3>自己接一个新 policy 的实用模板</h3>
+        <ol>
+          <li>复制 <code>policy/Your_Policy</code> 为 <code>policy/MyPolicy</code>，把 <code>eval.sh</code> 里的 <code>policy_name</code> 改成新目录名。</li>
+          <li>在 <code>deploy_policy.yml</code> 里放模型路径、checkpoint 名、是否使用语言、图像尺寸、action horizon 等参数。</li>
+          <li>在 <code>encode_obs()</code> 里统一相机名和尺度：RoboTwin 默认给 <code>head_camera</code>、<code>left_camera</code>、<code>right_camera</code>。</li>
+          <li>在 <code>get_model()</code> 里加载模型，并把动作归一化统计量、tokenizer、缓存窗口一起挂到 model 上。</li>
+          <li>在 <code>eval()</code> 里把模型输出转成 RoboTwin 支持的动作格式，优先从 <code>qpos</code> 跑通，再考虑 <code>ee</code> 或 <code>delta_ee</code>。</li>
+          <li>在 <code>reset_model()</code> 里清空 episode 级缓存；action chunk 模型尤其要清理历史动作和时间步。</li>
+        </ol>
+
+        <div class="note warn-box">
+          最容易出错的是三件事：相机顺序和训练时不同、动作维度和 embodiment 不一致、
+          训练数据使用 clean 但评测配置切到 randomized。调试时先用同一个
+          <code>task_config</code>/<code>ckpt_setting</code> 做闭环，再测试跨配置泛化。
+        </div>
+
+        <h3>资料入口</h3>
+        <ul>
+          <li>官方部署接口：<a href="https://robotwin-platform.github.io/doc/usage/deploy-your-policy.html">Deploy Your Policy</a></li>
+          <li>官方数据采集：<a href="https://robotwin-platform.github.io/doc/usage/collect-data.html">Collect Data</a></li>
+          <li>官方 policy 页面：<a href="https://robotwin-platform.github.io/doc/usage/ACT.html">ACT</a>、<a href="https://robotwin-platform.github.io/doc/usage/DP3.html">DP3</a>、<a href="https://robotwin-platform.github.io/doc/usage/DexVLA.html">DexVLA</a>、<a href="https://robotwin-platform.github.io/doc/usage/GO1.html">GO1</a></li>
+        </ul>
+      </section>
+
+      <section id="custom">
+        <h2>11. 自定义修改路线</h2>
+        <div class="grid">
+          <div class="card">
+            <h3><span class="tag edit">入门级</span> 改配置</h3>
+            <ul>
+              <li>改 <code>episode_num</code> 控制采集数量。</li>
+              <li>改 <code>domain_randomization</code> 控制背景、光照、杂物。</li>
+              <li>改 <code>camera</code> 和 <code>data_type</code> 控制保存模态。</li>
+              <li>改 <code>description/task_instruction/*.json</code> 增加语言模板。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3><span class="tag edit">中级</span> 改任务</h3>
+            <ul>
+              <li>修改 <code>load_actors()</code> 的物体、位置、目标点。</li>
+              <li>修改 <code>play_once()</code> 的专家动作。</li>
+              <li>修改 <code>check_success()</code> 的成功条件。</li>
+              <li>复制已有任务文件，新建自己的任务。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3><span class="tag edit">高级</span> 改资源和机器人</h3>
+            <ul>
+              <li>往 <code>assets/</code> 加新物体。</li>
+              <li>新增 embodiment，配置 URDF、关节、夹爪、planner。</li>
+              <li>修改 planner 或控制接口。</li>
+              <li>新增 observation 字段或保存格式。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3><span class="tag edit">算法级</span> 接模型</h3>
+            <ul>
+              <li>在 <code>policy/Your_Policy</code> 写模型加载。</li>
+              <li>实现 observation 编码。</li>
+              <li>把模型输出转成 <code>qpos</code> 或 <code>ee</code> action。</li>
+              <li>复用 <code>eval.sh</code> 和 <code>script/eval_policy.py</code>。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="study">
+        <h2>12. 推荐学习路径</h2>
+        <ol>
+          <li>先读 <code>README.md</code>，确认安装和数据下载方式。</li>
+          <li>用 <code>demo_clean</code> 跑一个小任务，建议把 <code>episode_num</code> 暂时改成 1。</li>
+          <li>看输出目录，理解 <code>seed.txt</code>、<code>_traj_data</code>、<code>data/*.hdf5</code>、<code>video/*.mp4</code>。</li>
+          <li>精读 <code>envs/move_can_pot.py</code>，把三个钩子函数和实际输出对上。</li>
+          <li>读 <code>envs/_base_task.py</code> 中的 <code>get_obs</code>、<code>move</code>、<code>grasp_actor</code>、<code>place_actor</code>、<code>take_action</code>。</li>
+          <li>复制一个任务，改物体位置或成功阈值，跑通采集。</li>
+          <li>再看 <code>policy/Your_Policy/deploy_policy.py</code>，接一个最小模型或随机动作 policy 做评测闭环。</li>
+        </ol>
+      </section>
+
+      <section id="checklist">
+        <h2>13. 动手检查清单</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>目标</th>
+              <th>检查点</th>
+              <th>命令/文件</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>确认仓库能运行</td>
+              <td>能进入 RoboTwin，脚本存在。</td>
+              <td><code>cd /mnt/disk1/shared_data/lzy/RoboTwin</code></td>
+            </tr>
+            <tr>
+              <td>跑通数据采集</td>
+              <td>生成 hdf5 和 mp4。</td>
+              <td><code>bash collect_data.sh move_can_pot demo_clean 0</code></td>
+            </tr>
+            <tr>
+              <td>调试任务</td>
+              <td>减少 episode，加快试错。</td>
+              <td><code>task_config/demo_clean.yml</code> 中改 <code>episode_num</code></td>
+            </tr>
+            <tr>
+              <td>自定义任务</td>
+              <td>文件名、类名、task_name 一致。</td>
+              <td><code>envs/my_task.py</code></td>
+            </tr>
+            <tr>
+              <td>接 policy</td>
+              <td>实现三个函数。</td>
+              <td><code>policy/Your_Policy/deploy_policy.py</code></td>
+            </tr>
+            <tr>
+              <td>看失败原因</td>
+              <td>关注 unstable、planning fail、success check。</td>
+              <td><code>load_actors()</code>、<code>play_once()</code>、<code>check_success()</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="note warn-box">
+          如果你下一步要真正新建任务，建议先从 <code>move_can_pot.py</code>
+          或 <code>place_object_basket.py</code> 复制一个最接近的任务，而不是从空文件开始。
+          这样可以少踩很多坐标系、抓取方向和随机物体稳定性的坑。
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

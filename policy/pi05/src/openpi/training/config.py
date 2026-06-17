@@ -552,6 +552,42 @@ _CONFIGS = [
     ###
     ### finetune config for robotwin
     ###
+    # pi0.5 checkpoint released by motus-robotics/pi0.5_robotwin2.
+    TrainConfig(
+        name="pi05_base_finetune_on_robotwin_clean_randomized_joint_training",
+        project_name="pi05_finetune",
+        exp_name="robotwin_clean_randomized_joint_training",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
+        data=LeRobotAlohaDataConfig(
+            repo_id="clean_randomized_joint_training",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "high_image",
+                                "cam_left_wrist": "left_wrist_image",
+                                "cam_right_wrist": "right_wrist_image",
+                            },
+                            "state": "state",
+                            "actions": "actions",
+                            "prompt": "prompt",
+                        }
+                    ),
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(asset_id="pi0.5_clean_randomize_joint_training"),
+            action_sequence_keys=("actions",),
+        ),
+        seed=42,
+        batch_size=128,
+        num_workers=16,
+        num_train_steps=1_000_000,
+        fsdp_devices=1,
+    ),
     # pi05_base by full
     TrainConfig(
         name="pi05_aloha_full_base",
