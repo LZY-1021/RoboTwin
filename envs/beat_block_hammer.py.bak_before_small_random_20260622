@@ -19,31 +19,23 @@ class beat_block_hammer(Base_Task):
             model_id=0,
         )
         force_side = os.environ.get("ROBOTWIN_FORCE_SIDE", "").strip().lower()
-        small_random = os.environ.get("ROBOTWIN_SMALL_RANDOM", "0") == "1"
-        if force_side == "left" and small_random:
-            block_xlim = [-0.18, -0.12]
-            block_ylim = [0.02, 0.08]
-            block_rotate_lim = [0, 0, 0.15]
-        else:
-            block_xlim = [-0.25, -0.05] if force_side == "left" else [-0.25, 0.25]
-            block_ylim = [-0.05, 0.15]
-            block_rotate_lim = [0, 0, 0.5]
+        block_xlim = [-0.25, -0.05] if force_side == "left" else [-0.25, 0.25]
         block_pose = rand_pose(
             xlim=block_xlim,
-            ylim=block_ylim,
+            ylim=[-0.05, 0.15],
             zlim=[0.76],
             qpos=[1, 0, 0, 0],
             rotate_rand=True,
-            rotate_lim=block_rotate_lim,
+            rotate_lim=[0, 0, 0.5],
         )
         while abs(block_pose.p[0]) < 0.05 or np.sum(pow(block_pose.p[:2], 2)) < 0.001:
             block_pose = rand_pose(
                 xlim=block_xlim,
-                ylim=block_ylim,
+                ylim=[-0.05, 0.15],
                 zlim=[0.76],
                 qpos=[1, 0, 0, 0],
                 rotate_rand=True,
-                rotate_lim=block_rotate_lim,
+                rotate_lim=[0, 0, 0.5],
             )
 
         self.block = create_box(

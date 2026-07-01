@@ -123,6 +123,25 @@ def main(usr_args):
 
     save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
     save_dir.mkdir(parents=True, exist_ok=True)
+    trace_utils = None
+    if os.environ.get("PI05_TRACE_ENABLE", "0") == "1":
+        try:
+            from openpi.models_pytorch import trace_utils as _trace_utils
+
+            trace_utils = _trace_utils
+            trace_dir_name = os.environ.get("PI05_TRACE_DIR_NAME", "traces")
+            trace_utils.configure(
+                save_dir / trace_dir_name,
+                {
+                    "task_name": task_name,
+                    "policy_name": policy_name,
+                    "task_config": task_config,
+                    "ckpt_setting": ckpt_setting,
+                    "created_at": current_time,
+                },
+            )
+        except ImportError as e:
+            print(f"[trace] disabled: failed to import trace_utils: {e}")
 
     if args["eval_video_log"]:
         video_save_dir = save_dir
@@ -170,7 +189,8 @@ def main(usr_args):
                                    st_seed,
                                    test_num=test_num,
                                    video_size=video_size,
-                                   instruction_type=instruction_type)
+                                   instruction_type=instruction_type,
+                                   trace_utils=trace_utils)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -194,7 +214,8 @@ def eval_policy(task_name,
                 st_seed,
                 test_num=100,
                 video_size=None,
-                instruction_type=None):
+                instruction_type=None,
+                trace_utils=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
@@ -259,6 +280,17 @@ def eval_policy(task_name,
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         instruction = np.random.choice(results[0][instruction_type])
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
+        if trace_utils is not None:
+            trace_utils.start_episode(
+                TASK_ENV.test_num,
+                {
+                    "episode_index": TASK_ENV.test_num,
+                    "seed": now_seed,
+                    "task_name": task_name,
+                    "instruction": instruction,
+                    "episode_info": episode_info["info"],
+                },
+            )
 
         if TASK_ENV.eval_video_path is not None:
             ffmpeg = subprocess.Popen(
@@ -306,6 +338,14 @@ def eval_policy(task_name,
             print("\033[92mSuccess!\033[0m")
         else:
             print("\033[91mFail!\033[0m")
+        if trace_utils is not None:
+            trace_utils.finish_episode(
+                {
+                    "success": bool(succ),
+                    "take_action_cnt": int(TASK_ENV.take_action_cnt),
+                    "step_limit": int(TASK_ENV.step_lim),
+                }
+            )
 
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))

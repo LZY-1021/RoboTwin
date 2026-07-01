@@ -185,6 +185,18 @@ class GemmaMLP(nn.Module):
                     if os.environ.get("PI0_MLP_REUSE_UPDATE_CACHE", "1") == "1":
                         self._pi0_mlp_prev_x = x.detach().clone()
                         self._pi0_mlp_prev_y = out.detach().clone()
+                    try:
+                        from openpi.models_pytorch import trace_utils
+
+                        trace_utils.save_mlp(
+                            int(getattr(self, "_pi0_layer_idx", -1)),
+                            x,
+                            out,
+                            changed,
+                            getattr(self, "_pi0_mlp_reuse_last", {}),
+                        )
+                    except Exception:
+                        pass
                     return out
 
             down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
@@ -197,9 +209,36 @@ class GemmaMLP(nn.Module):
                 "skip_ratio": 0.0,
                 "rel_threshold": _pi0_env_float("PI0_MLP_REUSE_REL_THRESHOLD", 0.02),
             }
+            try:
+                from openpi.models_pytorch import trace_utils
+
+                trace_utils.save_mlp(
+                    int(getattr(self, "_pi0_layer_idx", -1)),
+                    x,
+                    down_proj,
+                    None,
+                    self._pi0_mlp_reuse_last,
+                )
+            except Exception:
+                pass
             return down_proj
 
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        try:
+            from openpi.models_pytorch import trace_utils
+
+            trace_utils.save_mlp(
+                int(getattr(self, "_pi0_layer_idx", -1)),
+                x,
+                down_proj,
+                None,
+                {
+                    "layer": int(getattr(self, "_pi0_layer_idx", -1)),
+                    "reuse_enabled": False,
+                },
+            )
+        except Exception:
+            pass
         return down_proj
 
 
@@ -321,6 +360,12 @@ def eager_attention_forward(
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
+
+    if os.environ.get("PI05_TRACE_SAVE_QK_LOGITS", "0") == "1":
+        module._pi05_last_query_states = query.detach()
+        module._pi05_last_key_states = key_states.detach()
+        module._pi05_last_value_states = value_states.detach()
+        module._pi05_last_attn_logits = attn_weights.detach()
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)

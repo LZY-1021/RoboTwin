@@ -350,10 +350,12 @@
         <a href="#robot">7. 机器人与控制</a>
         <a href="#data">8. 数据格式</a>
         <a href="#policy">9. Policy 接入与评测</a>
-        <a href="#policy-adapt">10. 不同 policy 怎么适配</a>
-        <a href="#custom">11. 自定义修改路线</a>
-        <a href="#study">12. 推荐学习路径</a>
-        <a href="#checklist">13. 动手检查清单</a>
+        <a href="#eval-flow">10. 评测执行全流程</a>
+        <a href="#seed-config">11. Seed 与场景配置</a>
+        <a href="#policy-adapt">12. 不同 policy 怎么适配</a>
+        <a href="#custom">13. 自定义修改路线</a>
+        <a href="#study">14. 推荐学习路径</a>
+        <a href="#checklist">15. 动手检查清单</a>
       </nav>
     </aside>
 
@@ -1033,8 +1035,349 @@ def reset_model(model):
         </div>
       </section>
 
+      <section id="eval-flow">
+        <h2>10. 评测执行全流程</h2>
+        <p>
+          RoboTwin 的 policy 评测不是直接把模型丢进环境里跑。每个 episode 都会先用任务专家
+          检查当前 seed 是否能生成一个可完成的任务，再重新建一次相同 seed 的场景，让 policy
+          从 observation 开始闭环控制。这样可以避免把明显不可规划、物体初始化不稳定的 episode
+          算进 policy 成功率。
+        </p>
+
+        <h3>从 shell 到 action 的调用链</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>阶段</th>
+              <th>代码入口</th>
+              <th>发生了什么</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>批量入口</td>
+              <td><code>policy/pi05/eval_many_baseline.sh</code><br><code>policy/pi05/eval_many_accel.sh</code></td>
+              <td>按 <code>tasks_example.txt</code> 逐个任务调用单任务 eval 脚本，传入 <code>task_config</code>、checkpoint、GPU、seed、test_num。</td>
+            </tr>
+            <tr>
+              <td>单任务入口</td>
+              <td><code>policy/pi05/eval_baseline.sh</code><br><code>policy/pi05/eval_accel.sh</code></td>
+              <td>设置 <code>PYTHONPATH</code>、加速相关环境变量、<code>ckpt_setting</code>，然后调用 <code>script/eval_policy.py</code>。</td>
+            </tr>
+            <tr>
+              <td>加载配置</td>
+              <td><code>script/eval_policy.py::main</code></td>
+              <td>读取 <code>task_config/&lt;name&gt;.yml</code>，补齐相机分辨率、机器人 embodiment、保存目录、视频目录。</td>
+            </tr>
+            <tr>
+              <td>加载任务</td>
+              <td><code>class_decorator(task_name)</code></td>
+              <td>动态导入 <code>envs.&lt;task_name&gt;</code>，实例化同名任务类，例如 <code>envs.adjust_bottle.adjust_bottle</code>。</td>
+            </tr>
+            <tr>
+              <td>加载 policy</td>
+              <td><code>policy/pi05/deploy_policy.py::get_model</code></td>
+              <td>读取 pi05 的 deploy 配置，加载 checkpoint、norm stats、tokenizer、模型权重和推理包装器。</td>
+            </tr>
+            <tr>
+              <td>专家预检查</td>
+              <td><code>TASK_ENV.setup_demo(...)</code><br><code>TASK_ENV.play_once()</code></td>
+              <td>用当前 seed 初始化场景，运行专家动作。如果规划失败、物体不稳定或 <code>check_success()</code> 失败，就跳过这个 seed。</td>
+            </tr>
+            <tr>
+              <td>正式评测建场景</td>
+              <td><code>TASK_ENV.setup_demo(...)</code></td>
+              <td>用同一个 seed 重新创建 episode。这里会加载机器人、桌面、相机、物体、背景、光照和任务随机变量。</td>
+            </tr>
+            <tr>
+              <td>语言指令</td>
+              <td><code>generate_episode_descriptions(...)</code><br><code>TASK_ENV.set_instruction(...)</code></td>
+              <td>根据 <code>play_once()</code> 记录的 <code>episode_info</code> 填充语言模板，再从指定 instruction type 中随机选一句。</td>
+            </tr>
+            <tr>
+              <td>观测</td>
+              <td><code>TASK_ENV.get_obs()</code></td>
+              <td>读取 head/wrist RGB、qpos、endpose、pointcloud 等字段，具体保存和返回内容受 <code>data_type</code> 控制。</td>
+            </tr>
+            <tr>
+              <td>policy 推理</td>
+              <td><code>policy/pi05/deploy_policy.py::eval</code></td>
+              <td>把 observation 转成 pi05 输入，更新 observation window，调用 <code>model.get_action()</code> 得到动作序列。</td>
+            </tr>
+            <tr>
+              <td>模型内部</td>
+              <td><code>openpi/policies/policy.py::infer</code><br><code>pi0_pytorch.py::sample_actions</code></td>
+              <td>做图像/语言/state 预处理，跑 prefix prefill KV，再进行 denoise diffusion 推理，输出一个 action chunk。</td>
+            </tr>
+            <tr>
+              <td>环境执行</td>
+              <td><code>TASK_ENV.take_action(...)</code></td>
+              <td>按 <code>qpos</code> 或 <code>ee</code> 动作格式推进仿真，更新成功标记、视频帧和 action 计数。</td>
+            </tr>
+            <tr>
+              <td>结束记录</td>
+              <td><code>_result.txt</code><br><code>eval_result/.../episode*.mp4</code></td>
+              <td>达到成功条件或 step limit 后结束 episode，写成功率、视频；如果打开 trace，还会写每次 inference 的 obs/KV/MLP/action。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>一次 episode 内部的简化流程图</h3>
+        <pre><code>eval_many_*.sh
+  -> eval_*.sh
+    -> script/eval_policy.py
+      -> load task_config/demo_clean.yml or demo_randomized.yml
+      -> import envs.&lt;task_name&gt;
+      -> policy/pi05/deploy_policy.py::get_model()
+
+      for episode:
+        seed = 100000 * (1 + cli_seed) + episode_offset
+
+        # 1. expert check
+        TASK_ENV.setup_demo(seed=seed, is_test=True, ...)
+          -> Base_Task._init_task_env_()
+             -> create SAPIEN scene / renderer / camera / robot
+             -> task.load_actors()
+        episode_info = TASK_ENV.play_once()
+        keep only if plan_success and check_success()
+        TASK_ENV.close_env()
+
+        # 2. policy rollout
+        TASK_ENV.setup_demo(seed=seed, is_test=True, ...)
+        instruction = random choice from generated language templates
+        TASK_ENV.set_instruction(instruction)
+        reset_model(model)
+
+        while take_action_cnt &lt; step_lim:
+          obs = TASK_ENV.get_obs()
+          policy.eval(TASK_ENV, model, obs)
+            -> encode_obs()
+            -> model.get_action()
+              -> policy.infer()
+              -> pi0_pytorch.sample_actions(num_steps=10)
+              -> output action_horizon actions
+            -> TASK_ENV.take_action(action)
+          stop if TASK_ENV.eval_success
+
+        write _result.txt / mp4 / traces</code></pre>
+
+        <div class="note">
+          对 pi05 当前配置来说，<code>Pi0Config(pi05=True, action_horizon=32)</code>
+          表示模型一次 inference 生成 32 步动作；<code>sample_actions(num_steps=10)</code>
+          表示 diffusion denoise 默认跑 10 个去噪步。部署脚本里的 <code>pi0_step</code>
+          是最多取多少步执行，实际不会超过模型输出的 action horizon。
+        </div>
+
+        <h3>render 在哪里发生</h3>
+        <p>
+          <code>render_freq</code> 控制 viewer/渲染频率。批量评测通常设为 0，不开交互 viewer；
+          但这不等于没有图像 observation。head/wrist 相机仍然由 SAPIEN 场景渲染出 RGB，
+          <code>get_obs()</code> 会把这些图像交给 policy。评测视频由 <code>eval_video_log</code>
+          控制，打开时 <code>eval_policy.py</code> 会启动 <code>ffmpeg</code>，把每步 head camera
+          帧写成 <code>episode*.mp4</code>。
+        </p>
+
+        <h3>trace 数据在流程里的位置</h3>
+        <p>
+          打开 <code>PI05_TRACE_ENABLE=1</code> 后，trace 是挂在正式 policy rollout 上的：
+          episode 开始时写 <code>meta.json</code>，每次 <code>model.get_action()</code> 建一个
+          <code>infer_xxxx</code> 目录，里面保存当前 inference 的 observation、prefill KV、
+          denoise KV、MLP 输出和 action。专家预检查阶段不会保存 trace。
+        </p>
+      </section>
+
+      <section id="seed-config">
+        <h2>11. Seed 与场景配置</h2>
+        <p>
+          RoboTwin 里一个任务的“随机性”来自两层：一层是 <code>task_config</code>
+          里的 domain randomization，另一层是每个 <code>envs/*.py</code> 任务自己写的
+          物体、姿态、左右臂、语言变量随机。<code>demo_clean</code> 只关闭第一层大部分视觉扰动，
+          不会把任务内部随机性全部关掉。
+        </p>
+
+        <h3>seed 具体控制什么</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>随机项</th>
+              <th>例子</th>
+              <th>代码位置</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>任务物体位置/姿态</td>
+              <td><code>click_bell</code> 的 bell 在桌面左右随机；<code>beat_block_hammer</code> 的 block 在范围内随机。</td>
+              <td><code>envs/*::load_actors()</code> 中的 <code>rand_pose()</code>、<code>rand_create_actor()</code></td>
+            </tr>
+            <tr>
+              <td>物体型号</td>
+              <td><code>adjust_bottle</code> 从 <code>model_id=[13,16]</code> 中选瓶子。</td>
+              <td><code>np.random.choice(...)</code></td>
+            </tr>
+            <tr>
+              <td>左右臂/左右位置</td>
+              <td><code>adjust_bottle</code> 用 <code>qpose_tag</code> 决定瓶子在左侧还是右侧，并进一步决定 arm tag。</td>
+              <td><code>np.random.randint(...)</code> 后在 <code>play_once()</code> 里映射到 <code>ArmTag</code></td>
+            </tr>
+            <tr>
+              <td>语言指令模板</td>
+              <td>同一个 episode info 可以生成多句描述，评测时随机取一句。</td>
+              <td><code>description/task_instruction/*.json</code><br><code>generate_episode_descriptions()</code></td>
+            </tr>
+            <tr>
+              <td>背景/光照/桌高/杂物</td>
+              <td><code>demo_randomized</code> 会随机背景、杂物、光照和桌高；<code>demo_clean</code> 基本关闭这些扰动。</td>
+              <td><code>task_config/*.yml</code> 的 <code>domain_randomization</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          在 <code>script/eval_policy.py</code> 中，命令行传入的 seed 会先变成
+          <code>st_seed = 100000 * (1 + seed)</code>。例如传 <code>0</code>，
+          第一个尝试 seed 是 <code>100000</code>；每个 episode 或失败尝试后
+          <code>now_seed += 1</code>。因此不同 CLI seed 会落在相距 100000 的随机区间里，
+          便于分批测试时减少重复。
+        </p>
+
+        <h3><code>demo_clean</code> 和 <code>demo_randomized</code> 的区别</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>字段</th>
+              <th><code>demo_clean.yml</code></th>
+              <th><code>demo_randomized.yml</code></th>
+              <th>影响</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>random_background</code></td>
+              <td>false</td>
+              <td>true</td>
+              <td>是否随机背景纹理/环境背景。</td>
+            </tr>
+            <tr>
+              <td><code>cluttered_table</code></td>
+              <td>false</td>
+              <td>true</td>
+              <td>是否在桌面加入额外杂物。</td>
+            </tr>
+            <tr>
+              <td><code>clean_background_rate</code></td>
+              <td>1</td>
+              <td>0.02</td>
+              <td>随机背景中保留干净背景的概率。</td>
+            </tr>
+            <tr>
+              <td><code>random_table_height</code></td>
+              <td>0</td>
+              <td>0.03</td>
+              <td>桌面高度扰动范围；会影响相机看到的几何关系和机器人接触高度。</td>
+            </tr>
+            <tr>
+              <td><code>random_light</code></td>
+              <td>false</td>
+              <td>true</td>
+              <td>是否随机光照。</td>
+            </tr>
+            <tr>
+              <td><code>crazy_random_light_rate</code></td>
+              <td>0</td>
+              <td>0.02</td>
+              <td>极端光照扰动比例。</td>
+            </tr>
+            <tr>
+              <td><code>camera</code></td>
+              <td>D435 head + D435 wrist</td>
+              <td>D435 head + D435 wrist</td>
+              <td>两者默认相机设置相同。</td>
+            </tr>
+            <tr>
+              <td><code>data_type</code></td>
+              <td>RGB、endpose、qpos 开启</td>
+              <td>RGB、endpose、qpos 开启</td>
+              <td>两者默认保存/返回的数据模态相同。</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="note warn-box">
+          所以 <code>demo_clean</code> 不是“完全固定场景”。它的含义更接近：
+          干净背景、无杂物、无随机光照、固定桌高；但任务物体的位置、型号、左右侧、语言模板
+          仍然可能随 seed 变化。
+        </div>
+
+        <h3>如何设置测试配置</h3>
+        <p>常用命令结构如下：</p>
+        <pre><code>cd /mnt/disk1/shared_data/lzy/RoboTwin
+
+# baseline，clean 场景，测试 10 个 episode，从 CLI seed 0 开始
+bash policy/pi05/eval_many_baseline.sh \
+  policy/pi05/tasks_example.txt \
+  demo_clean \
+  pi05_base_finetune_on_robotwin_clean_randomized_joint_training \
+  pi05_robotwin2 \
+  0 \
+  0 \
+  10
+
+# randomized 场景只需要把 task_config 换成 demo_randomized
+bash policy/pi05/eval_many_baseline.sh \
+  policy/pi05/tasks_example.txt \
+  demo_randomized \
+  pi05_base_finetune_on_robotwin_clean_randomized_joint_training \
+  pi05_robotwin2 \
+  0 \
+  0 \
+  10</code></pre>
+
+        <p>如果想缩小 clean 场景里任务物体的随机范围，需要改任务文件本身，而不是只改 <code>demo_clean.yml</code>：</p>
+        <pre><code># 例：click_bell 的位置随机范围在 envs/click_bell.py
+rand_pose(
+    xlim=[-0.25, 0.25],
+    ylim=[-0.2, 0.0],
+)
+
+# 想让范围更小，就把 xlim/ylim 改窄，例如：
+rand_pose(
+    xlim=[-0.15, 0.15],
+    ylim=[-0.15, -0.05],
+)</code></pre>
+
+        <h3>代码构图：任务由哪些块组成</h3>
+        <pre><code>task_config/demo_clean.yml
+  -> domain_randomization / camera / data_type / embodiment
+
+envs/&lt;task_name&gt;.py
+  -> setup_demo()
+     -> Base_Task._init_task_env_()
+  -> load_actors()
+     -> random object pose / model id / target pose / prohibited area
+  -> play_once()
+     -> expert motion plan
+     -> self.info["info"] for language placeholders
+  -> check_success()
+     -> success condition used by expert check and policy eval
+
+description/task_instruction/&lt;task_name&gt;.json
+  -> language templates with placeholders such as {A}, {a}
+
+script/eval_policy.py
+  -> choose seed
+  -> expert check
+  -> generate instruction
+  -> loop get_obs -> policy.eval -> take_action
+
+policy/pi05/deploy_policy.py
+  -> encode obs
+  -> call pi05 model
+  -> execute action chunk in RoboTwin</code></pre>
+      </section>
+
       <section id="policy-adapt">
-        <h2>10. 不同 policy 怎么适配</h2>
+        <h2>12. 不同 policy 怎么适配</h2>
         <p>
           适配不同 policy 的本质，是把同一份 RoboTwin 数据转成各算法喜欢的
           <code>观测模态</code>、<code>动作格式</code>、<code>时间窗口</code> 和
@@ -1194,7 +1537,7 @@ bash hdf52lerobot.sh beat_block_hammer demo_clean 50</code></pre>
       </section>
 
       <section id="custom">
-        <h2>11. 自定义修改路线</h2>
+        <h2>13. 自定义修改路线</h2>
         <div class="grid">
           <div class="card">
             <h3><span class="tag edit">入门级</span> 改配置</h3>
@@ -1236,7 +1579,7 @@ bash hdf52lerobot.sh beat_block_hammer demo_clean 50</code></pre>
       </section>
 
       <section id="study">
-        <h2>12. 推荐学习路径</h2>
+        <h2>14. 推荐学习路径</h2>
         <ol>
           <li>先读 <code>README.md</code>，确认安装和数据下载方式。</li>
           <li>用 <code>demo_clean</code> 跑一个小任务，建议把 <code>episode_num</code> 暂时改成 1。</li>
@@ -1249,7 +1592,7 @@ bash hdf52lerobot.sh beat_block_hammer demo_clean 50</code></pre>
       </section>
 
       <section id="checklist">
-        <h2>13. 动手检查清单</h2>
+        <h2>15. 动手检查清单</h2>
         <table>
           <thead>
             <tr>

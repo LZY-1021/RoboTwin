@@ -96,9 +96,11 @@ class PaliGemmaWithExpertModel(nn.Module):
         inputs_embeds: list[torch.FloatTensor] | None = None,
         use_cache: bool | None = None,
         adarms_cond: list[torch.Tensor] | None = None,
+        output_attentions: bool = False,
     ):
         if adarms_cond is None:
             adarms_cond = [None, None]
+        attentions = None
         if inputs_embeds[1] is None:
             prefix_output = self.paligemma.language_model.forward(
                 inputs_embeds=inputs_embeds[0],
@@ -107,7 +109,9 @@ class PaliGemmaWithExpertModel(nn.Module):
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 adarms_cond=adarms_cond[0] if adarms_cond is not None else None,
+                output_attentions=output_attentions,
             )
+            attentions = prefix_output.attentions
             prefix_past_key_values = prefix_output.past_key_values
             prefix_output = prefix_output.last_hidden_state
             suffix_output = None
@@ -119,7 +123,9 @@ class PaliGemmaWithExpertModel(nn.Module):
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 adarms_cond=adarms_cond[1] if adarms_cond is not None else None,
+                output_attentions=output_attentions,
             )
+            attentions = suffix_output.attentions
             suffix_output = suffix_output.last_hidden_state
             prefix_output = None
             prefix_past_key_values = None
@@ -278,4 +284,6 @@ class PaliGemmaWithExpertModel(nn.Module):
             suffix_output = outputs_embeds[1]
             prefix_past_key_values = None
 
+        if output_attentions:
+            return [prefix_output, suffix_output], prefix_past_key_values, attentions
         return [prefix_output, suffix_output], prefix_past_key_values

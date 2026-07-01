@@ -4,6 +4,7 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.4}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+export PYTHONPATH="${SCRIPT_DIR}/src:${SCRIPT_DIR}/packages/openpi-client/src:${SCRIPT_DIR}:${PYTHONPATH}"
 
 policy_name=pi05
 task_name=${1}
@@ -16,6 +17,10 @@ test_num=${7:-100}
 
 export PI0_MLP_REUSE=0
 export PI05_DENOISE_KV_MODE=fresh
+ckpt_setting=${model_name}_baseline
+if [ "${PI05_TRACE_ENABLE:-0}" = "1" ]; then
+    ckpt_setting=${ckpt_setting}_trace
+fi
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
@@ -30,7 +35,7 @@ python script/eval_policy.py --config policy/$policy_name/deploy_policy.yml \
     --task_config ${task_config} \
     --train_config_name ${train_config_name} \
     --model_name ${model_name} \
-    --ckpt_setting ${model_name}_baseline \
+    --ckpt_setting ${ckpt_setting} \
     --seed ${seed} \
     --policy_name ${policy_name} \
     --test_num ${test_num}

@@ -22,6 +22,7 @@ from openpi.policies import policy_config as _policy_config
 from openpi.shared import download
 from openpi.training import config as _config
 from openpi.training import data_loader as _data_loader
+from openpi.models_pytorch import trace_utils
 import os
 
 class PI0:
@@ -32,8 +33,14 @@ class PI0:
         self.checkpoint_id = checkpoint_id
 
         specified_path = f"policy/pi05/checkpoints/{self.train_config_name}/{self.model_name}/{self.checkpoint_id}/assets/"
-        entries = os.listdir(specified_path)
-        assets_id = entries[0]
+        asset_candidates = [
+            entry
+            for entry in os.listdir(specified_path)
+            if os.path.isfile(os.path.join(specified_path, entry, "norm_stats.json"))
+        ]
+        if not asset_candidates:
+            raise FileNotFoundError(f"No norm_stats.json found under: {specified_path}")
+        assets_id = asset_candidates[0]
 
         config = _config.get_config(self.train_config_name)
         self.policy = _policy_config.create_trained_policy(
@@ -79,9 +86,37 @@ class PI0:
 
     def get_action(self):
         assert self.observation_window is not None, "update observation_window first!"
-        return self.policy.infer(self.observation_window)["actions"]
+        trace_utils.start_infer(self.observation_window)
+        actions = self.policy.infer(self.observation_window)["actions"]
+        trace_utils.save_action(actions, actions[:self.pi0_step])
+        return actions
+
+    def clear_mlp_reuse_cache(self):
+        torch_model = getattr(self.policy, "_model", None)
+        if torch_model is None or not hasattr(torch_model, "modules"):
+            return
+        cache_attrs = (
+            "_pi0_mlp_prev_x",
+            "_pi0_mlp_prev_y",
+            "_pi0_mlp_out_buffer",
+            "_pi0_mlp_reuse_last",
+        )
+        for module in torch_model.modules():
+            for attr in cache_attrs:
+                if hasattr(module, attr):
+                    delattr(module, attr)
+
+    def clear_denoise_kv_cache(self):
+        torch_model = getattr(self.policy, "_model", None)
+        if torch_model is None:
+            return
+        for attr in ("_last_prefix_pad_masks", "_last_past_key_values", "_last_kv_mode_stats"):
+            if hasattr(torch_model, attr):
+                setattr(torch_model, attr, None)
 
     def reset_obsrvationwindows(self):
+        self.clear_mlp_reuse_cache()
+        self.clear_denoise_kv_cache()
         self.instruction = None
         self.observation_window = None
         print("successfully unset obs and language intruction")

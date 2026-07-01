@@ -6,10 +6,12 @@ import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
+from transformers.cache_utils import DynamicCache
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+from openpi.models_pytorch import trace_utils
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -114,7 +116,8 @@ class PI0Pytorch(nn.Module):
         self._last_prefix_pad_masks = None
         self._last_past_key_values = None
         self._last_kv_mode_stats = None
-        if self._denoise_kv_mode == "fresh":
+        self._trace_image_token_meta = []
+        if self._denoise_kv_mode == "fresh" and os.environ.get("PI05_TORCH_COMPILE", "1") == "1":
             self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
         # Initialize gradient checkpointing flag
@@ -198,9 +201,17 @@ class PI0Pytorch(nn.Module):
         embs = []
         pad_masks = []
         att_masks = []
+        image_token_meta = []
+        image_embeds_for_trace = {}
+        token_cursor = 0
+        obs_key_map = {
+            "base_0_rgb": "cam_high",
+            "left_wrist_0_rgb": "cam_left_wrist",
+            "right_wrist_0_rgb": "cam_right_wrist",
+        }
 
         # Process images
-        for img, img_mask in zip(images, img_masks, strict=True):
+        for image_key, img, img_mask in zip(_preprocessing.IMAGE_KEYS, images, img_masks, strict=True):
 
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
@@ -208,6 +219,25 @@ class PI0Pytorch(nn.Module):
             img_emb = self._apply_checkpoint(image_embed_func, img)
 
             bsize, num_img_embs = img_emb.shape[:2]
+            grid_h = int(math.sqrt(num_img_embs))
+            grid_w = num_img_embs // grid_h if grid_h > 0 and num_img_embs % grid_h == 0 else num_img_embs
+            if grid_h * grid_w != num_img_embs:
+                grid_h = 1
+            token_start = token_cursor
+            token_end = token_start + num_img_embs
+            image_token_meta.append(
+                {
+                    "image_key": image_key,
+                    "obs_key": obs_key_map.get(image_key, image_key),
+                    "token_start": token_start,
+                    "token_end": token_end,
+                    "num_tokens": num_img_embs,
+                    "grid": [grid_h, grid_w],
+                    "embedding_shape": list(img_emb.shape),
+                }
+            )
+            image_embeds_for_trace[image_key] = img_emb
+            token_cursor = token_end
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
@@ -228,6 +258,8 @@ class PI0Pytorch(nn.Module):
 
         # full attention between image and language inputs
         num_lang_embs = lang_emb.shape[1]
+        language_start = token_cursor
+        language_end = language_start + num_lang_embs
         att_masks += [0] * num_lang_embs
 
         embs = torch.cat(embs, dim=1)
@@ -237,6 +269,20 @@ class PI0Pytorch(nn.Module):
         # Get batch size from the first dimension of the concatenated tensors
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
+        trace_utils.save_prefix_tokens(
+            {
+                "image_tokens": image_token_meta,
+                "language": {
+                    "token_start": language_start,
+                    "token_end": language_end,
+                    "num_tokens": num_lang_embs,
+                    "embedding_shape": list(lang_emb.shape),
+                },
+                "prefix_seq_len": int(embs.shape[1]),
+            },
+            image_embeds_for_trace,
+        )
+        self._trace_image_token_meta = image_token_meta
 
         return embs, pad_masks, att_masks
 
@@ -389,6 +435,7 @@ class PI0Pytorch(nn.Module):
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        self._maybe_inject_vla_cache_donor(prefix_pad_masks, device)
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
@@ -424,14 +471,22 @@ class PI0Pytorch(nn.Module):
                 prefix_position_ids,
             )
 
-        _, past_key_values = self.paligemma_with_expert.forward(
+        save_prefix_attn = os.environ.get("PI05_TRACE_SAVE_PREFIX_ATTN", "0") == "1"
+        prefix_forward_output = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
+            output_attentions=save_prefix_attn,
         )
+        if save_prefix_attn:
+            _, past_key_values, prefix_attentions = prefix_forward_output
+            self._save_prefix_attention(prefix_attentions)
+        else:
+            _, past_key_values = prefix_forward_output
         past_key_values = self._past_key_values_to_tuple(past_key_values)
+        trace_utils.save_kv("prefix_current", past_key_values)
 
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
@@ -457,12 +512,15 @@ class PI0Pytorch(nn.Module):
                 past_key_values,
                 old_cache_ok,
             )
+            if os.environ.get("PI05_TRACE_SAVE_KV_STEPS", "0") == "1":
+                trace_utils.save_kv(f"denoise_step_{step_idx:03d}", step_past_key_values)
             v_t = self.denoise_step(
                 state,
                 step_prefix_pad_masks,
                 step_past_key_values,
                 x_t,
                 expanded_time,
+                step_idx=step_idx,
             )
 
             # Euler step - use new tensor assignment instead of in-place operation
@@ -474,14 +532,23 @@ class PI0Pytorch(nn.Module):
         return x_t
 
     def _run_prefix_kv(self, prefix_embs, prefix_att_2d_masks_4d, prefix_position_ids):
-        _, past_key_values = self.paligemma_with_expert.forward(
+        save_prefix_attn = os.environ.get("PI05_TRACE_SAVE_PREFIX_ATTN", "0") == "1"
+        prefix_forward_output = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
+            output_attentions=save_prefix_attn,
         )
-        return self._past_key_values_to_tuple(past_key_values)
+        if save_prefix_attn:
+            _, past_key_values, prefix_attentions = prefix_forward_output
+            self._save_prefix_attention(prefix_attentions)
+        else:
+            _, past_key_values = prefix_forward_output
+        past_key_values = self._past_key_values_to_tuple(past_key_values)
+        trace_utils.save_kv("prefix_current", past_key_values)
+        return past_key_values
 
     def _run_denoise_step_range(
         self,
@@ -498,12 +565,15 @@ class PI0Pytorch(nn.Module):
         dt = -1.0 / num_steps
         for step_idx in range(step_start, step_end):
             timestep = torch.tensor(1.0 + step_idx * dt, dtype=torch.float32, device=device).expand(bsize)
+            if os.environ.get("PI05_TRACE_SAVE_KV_STEPS", "0") == "1":
+                trace_utils.save_kv(f"denoise_step_{step_idx:03d}", past_key_values)
             v_t = self.denoise_step(
                 state,
                 prefix_pad_masks,
                 past_key_values,
                 x_t,
                 timestep,
+                step_idx=step_idx,
             )
             x_t = x_t + dt * v_t
         return x_t
@@ -568,6 +638,8 @@ class PI0Pytorch(nn.Module):
                 self._last_past_key_values,
                 current_layer_count,
             )
+            if os.environ.get("PI05_TRACE_SAVE_KV_STEPS", "0") == "1":
+                trace_utils.save_kv(f"denoise_step_{step_idx:03d}", mixed_past_key_values)
             timestep = torch.tensor(1.0 + step_idx * dt, dtype=torch.float32, device=device).expand(bsize)
             v_t = self.denoise_step(
                 state,
@@ -575,6 +647,7 @@ class PI0Pytorch(nn.Module):
                 mixed_past_key_values,
                 x_t,
                 timestep,
+                step_idx=step_idx,
             )
             x_t = x_t + dt * v_t
 
@@ -594,10 +667,37 @@ class PI0Pytorch(nn.Module):
     def _has_previous_prefix(self, prefix_pad_masks) -> bool:
         return self._last_prefix_pad_masks is not None and self._last_prefix_pad_masks.shape == prefix_pad_masks.shape
 
+    def _maybe_inject_vla_cache_donor(self, prefix_pad_masks, device) -> None:
+        if os.environ.get("VLA_CACHE_ENABLE", "0") != "1":
+            return
+        if self._denoise_kv_mode not in {"step_cutoff", "cutoff", "layer_accumulate", "layerwise", "layer_accum"}:
+            return
+        try:
+            from vla_serving.cache import inject_robotwin_donor_kv
+
+            result = inject_robotwin_donor_kv(
+                torch_model=self,
+                current_infer_dir=trace_utils.current_infer_dir(),
+                prefix_pad_masks=prefix_pad_masks,
+                device=device,
+            )
+            if result.get("enabled"):
+                self._last_kv_mode_stats = {**(self._last_kv_mode_stats or {}), "cache_query": result}
+        except Exception as exc:  # noqa: BLE001
+            self._last_kv_mode_stats = {
+                **(self._last_kv_mode_stats or {}),
+                "cache_query": {"enabled": True, "used": False, "reason": "exception", "error": str(exc)},
+            }
+
     def _past_key_values_to_tuple(self, past_key_values):
         if hasattr(past_key_values, "key_cache") and hasattr(past_key_values, "value_cache"):
             return tuple(zip(past_key_values.key_cache, past_key_values.value_cache, strict=True))
         return tuple((layer[0], layer[1]) for layer in past_key_values)
+
+    def _past_key_values_to_cache(self, past_key_values):
+        if hasattr(past_key_values, "get_seq_length"):
+            return past_key_values
+        return DynamicCache.from_legacy_cache(past_key_values)
 
     def _can_reuse_previous_kv(self, prefix_pad_masks, past_key_values) -> bool:
         prev_masks = self._last_prefix_pad_masks
@@ -678,6 +778,7 @@ class PI0Pytorch(nn.Module):
         past_key_values,
         x_t,
         timestep,
+        step_idx: int | None = None,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
@@ -699,16 +800,194 @@ class PI0Pytorch(nn.Module):
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        outputs_embeds, _ = self.paligemma_with_expert.forward(
+        save_attn = os.environ.get("PI05_TRACE_SAVE_ATTN", "0") == "1"
+        save_qk_logits = os.environ.get("PI05_TRACE_SAVE_QK_LOGITS", "0") == "1"
+        forward_output = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
-            past_key_values=past_key_values,
+            past_key_values=self._past_key_values_to_cache(past_key_values),
             inputs_embeds=[None, suffix_embs],
             use_cache=False,
             adarms_cond=[None, adarms_cond],
+            output_attentions=save_attn or save_qk_logits,
         )
+        if save_attn or save_qk_logits:
+            outputs_embeds, _, attentions = forward_output
+            if save_attn:
+                self._save_denoise_attention(step_idx, attentions)
+            if save_qk_logits:
+                self._save_denoise_qk_logits(step_idx)
+        else:
+            outputs_embeds, _ = forward_output
 
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
+
+    def _parse_trace_attention_layers(self, total_layers: int) -> list[int]:
+        value = os.environ.get("PI05_TRACE_ATTN_LAYERS", "0,3,6,9,12,15,17").strip()
+        if value in {"", "all"}:
+            return list(range(total_layers))
+        layers = []
+        for item in value.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            layer = int(item)
+            if 0 <= layer < total_layers:
+                layers.append(layer)
+        return layers
+
+    def _save_denoise_attention(self, step_idx: int | None, attentions) -> None:
+        if attentions is None or not self._trace_image_token_meta:
+            return
+        layers = self._parse_trace_attention_layers(len(attentions))
+        save_full = os.environ.get("PI05_TRACE_SAVE_ATTN_FULL", "0") == "1"
+        payload = {
+            "step": int(step_idx) if step_idx is not None else None,
+            "layers": {},
+            "full_layers": {},
+            "image_tokens": self._trace_image_token_meta,
+            "query_axis": {},
+            "description": (
+                "Attention from denoise suffix/action queries to image prefix tokens. "
+                "`layers` averages over heads and suffix queries; `full_layers` keeps [heads, queries, grid_h, grid_w] "
+                "when PI05_TRACE_SAVE_ATTN_FULL=1."
+            ),
+        }
+        for layer in layers:
+            attn = attentions[layer]
+            if attn is None or attn.ndim != 4:
+                continue
+            # Shape is [B, heads, suffix_query_len, prefix_len + suffix_len].
+            heads = int(attn.shape[1])
+            suffix_query_len = int(attn.shape[2])
+            action_horizon = int(self.config.action_horizon)
+            state_query_count = max(0, suffix_query_len - action_horizon)
+            payload["query_axis"] = {
+                "num_heads": heads,
+                "suffix_query_len": suffix_query_len,
+                "state_query_count": state_query_count,
+                "action_query_start": state_query_count,
+                "action_query_count": max(0, suffix_query_len - state_query_count),
+                "action_horizon": action_horizon,
+            }
+            layer_payload = {}
+            full_layer_payload = {}
+            for item in self._trace_image_token_meta:
+                start = int(item["token_start"])
+                end = int(item["token_end"])
+                grid_h, grid_w = item["grid"]
+                image_attn = attn[0, :, :, start:end].detach().to(torch.float32)
+                values = image_attn.mean(dim=(0, 1))
+                if values.numel() != grid_h * grid_w:
+                    continue
+                layer_payload[item["image_key"]] = values.reshape(grid_h, grid_w)
+                if save_full:
+                    full_layer_payload[item["image_key"]] = image_attn.reshape(heads, suffix_query_len, grid_h, grid_w)
+            payload["layers"][f"layer_{layer:02d}"] = layer_payload
+            if save_full:
+                payload["full_layers"][f"layer_{layer:02d}"] = full_layer_payload
+        if not save_full:
+            payload.pop("full_layers", None)
+        label_step = 0 if step_idx is None else step_idx
+        trace_utils.save_attention(f"denoise_step_{label_step:03d}", payload)
+
+    def _save_denoise_qk_logits(self, step_idx: int | None) -> None:
+        if os.environ.get("PI05_TRACE_SAVE_QK_LOGITS", "0") != "1" or not self._trace_image_token_meta:
+            return
+        layers = self._parse_trace_attention_layers(len(self.paligemma_with_expert.gemma_expert.model.layers))
+        image_key_filter = os.environ.get("PI05_TRACE_QK_IMAGE_KEYS", "").strip()
+        if image_key_filter and image_key_filter.lower() != "all":
+            allowed_image_keys = {item.strip() for item in image_key_filter.split(",") if item.strip()}
+        else:
+            allowed_image_keys = None
+        payload = {
+            "step": int(step_idx) if step_idx is not None else None,
+            "layers": {},
+            "image_tokens": self._trace_image_token_meta,
+            "query_axis": {},
+            "description": (
+                "Pre-softmax denoise attention logits and their Q/K inputs. "
+                "Each layer stores query_states [heads, suffix_query_len, head_dim], "
+                "image_key_states/image_value_states [heads, image_tokens, head_dim], and "
+                "image_logits [heads, suffix_query_len, grid_h, grid_w]."
+            ),
+        }
+        for layer in layers:
+            attn_module = self.paligemma_with_expert.gemma_expert.model.layers[layer].self_attn
+            query_states = getattr(attn_module, "_pi05_last_query_states", None)
+            key_states = getattr(attn_module, "_pi05_last_key_states", None)
+            value_states = getattr(attn_module, "_pi05_last_value_states", None)
+            logits = getattr(attn_module, "_pi05_last_attn_logits", None)
+            if query_states is None or key_states is None or value_states is None or logits is None:
+                continue
+            if query_states.ndim != 4 or key_states.ndim != 4 or value_states.ndim != 4 or logits.ndim != 4:
+                continue
+            heads = int(query_states.shape[1])
+            suffix_query_len = int(query_states.shape[2])
+            action_horizon = int(self.config.action_horizon)
+            state_query_count = max(0, suffix_query_len - action_horizon)
+            payload["query_axis"] = {
+                "num_heads": heads,
+                "suffix_query_len": suffix_query_len,
+                "state_query_count": state_query_count,
+                "action_query_start": state_query_count,
+                "action_query_count": max(0, suffix_query_len - state_query_count),
+                "action_horizon": action_horizon,
+            }
+            layer_payload = {
+                "query_states": query_states[0].detach().to(torch.float32),
+                "image_key_states": {},
+                "image_value_states": {},
+                "image_logits": {},
+            }
+            for item in self._trace_image_token_meta:
+                image_key = item["image_key"]
+                if allowed_image_keys is not None and image_key not in allowed_image_keys:
+                    continue
+                start = int(item["token_start"])
+                end = int(item["token_end"])
+                grid_h, grid_w = item["grid"]
+                image_keys = key_states[0, :, start:end, :].detach().to(torch.float32)
+                image_values = value_states[0, :, start:end, :].detach().to(torch.float32)
+                image_logits = logits[0, :, :, start:end].detach().to(torch.float32)
+                if image_logits.numel() != heads * suffix_query_len * grid_h * grid_w:
+                    continue
+                layer_payload["image_key_states"][image_key] = image_keys
+                layer_payload["image_value_states"][image_key] = image_values
+                layer_payload["image_logits"][image_key] = image_logits.reshape(heads, suffix_query_len, grid_h, grid_w)
+            payload["layers"][f"layer_{layer:02d}"] = layer_payload
+            delattr(attn_module, "_pi05_last_query_states")
+            delattr(attn_module, "_pi05_last_key_states")
+            delattr(attn_module, "_pi05_last_value_states")
+            delattr(attn_module, "_pi05_last_attn_logits")
+        label_step = 0 if step_idx is None else step_idx
+        trace_utils.save_qk_logits(f"denoise_step_{label_step:03d}", payload)
+
+    def _save_prefix_attention(self, attentions) -> None:
+        if attentions is None or not self._trace_image_token_meta:
+            return
+        layers = self._parse_trace_attention_layers(len(attentions))
+        payload = {
+            "layers": {},
+            "image_tokens": self._trace_image_token_meta,
+            "description": "Mean prefix attention received by each image prefix token from all prefix queries.",
+        }
+        for layer in layers:
+            attn = attentions[layer]
+            if attn is None or attn.ndim != 4:
+                continue
+            # Shape is [B, heads, prefix_query_len, prefix_key_len].
+            layer_payload = {}
+            for item in self._trace_image_token_meta:
+                start = int(item["token_start"])
+                end = int(item["token_end"])
+                grid_h, grid_w = item["grid"]
+                values = attn[0, :, :, start:end].detach().to(torch.float32).mean(dim=(0, 1))
+                if values.numel() != grid_h * grid_w:
+                    continue
+                layer_payload[item["image_key"]] = values.reshape(grid_h, grid_w)
+            payload["layers"][f"layer_{layer:02d}"] = layer_payload
+        trace_utils.save_attention("prefix", payload)
