@@ -52,6 +52,15 @@ def sample_beta(alpha, beta, bsize, device):
     return dist.sample((bsize,))
 
 
+def _optional_int_env(name: str, default: int | None) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return default
+    if value.strip().lower() in {"none", "null"}:
+        return None
+    return int(value)
+
+
 def make_att_2d_masks(pad_masks, att_masks):
     """Copied from big_vision.
 
@@ -117,6 +126,11 @@ class PI0Pytorch(nn.Module):
         self._last_past_key_values = None
         self._last_kv_mode_stats = None
         self._trace_image_token_meta = []
+        if self._denoise_kv_mode in {"sparse_attention", "sparse", "row_static"}:
+            self.enable_denoise_sparse_attention(
+                image_top_k=int(os.environ.get("PI05_DENOISE_SPARSE_IMAGE_TOP_K", "32")),
+                prompt_top_k=_optional_int_env("PI05_DENOISE_SPARSE_PROMPT_TOP_K", 32),
+            )
         if self._denoise_kv_mode == "fresh" and os.environ.get("PI05_TORCH_COMPILE", "1") == "1":
             self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
@@ -153,6 +167,30 @@ class PI0Pytorch(nn.Module):
     def is_gradient_checkpointing_enabled(self):
         """Check if gradient checkpointing is enabled."""
         return self.gradient_checkpointing_enabled
+
+    def enable_denoise_sparse_attention(
+        self,
+        image_top_k: int = 32,
+        prompt_top_k: int | None = 32,
+        image_ranges: tuple[tuple[int, int], ...] = ((0, 256), (256, 512), (512, 768)),
+    ):
+        """Enable row-static step-0 sensitive-K/V attention for denoise layers."""
+        for layer in self.paligemma_with_expert.gemma_expert.model.layers:
+            layer.self_attn.enable_row_static_step0_sensitive_kv(
+                image_ranges=image_ranges,
+                image_top_k=image_top_k,
+                prompt_top_k=prompt_top_k,
+            )
+
+    def disable_denoise_sparse_attention(self):
+        """Disable denoise sparse attention and return to dense attention."""
+        for layer in self.paligemma_with_expert.gemma_expert.model.layers:
+            layer.self_attn.disable_row_static_step0_sensitive_kv()
+
+    def reset_denoise_sparse_attention_cache(self):
+        """Clear per-layer sensitive-K/V caches before a new denoise rollout."""
+        for layer in self.paligemma_with_expert.gemma_expert.model.layers:
+            layer.self_attn.reset_row_static_step0_sensitive_kv_cache()
 
     def _apply_checkpoint(self, func, *args, **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
@@ -431,6 +469,8 @@ class PI0Pytorch(nn.Module):
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
+        if self._denoise_kv_mode in {"sparse_attention", "sparse", "row_static"}:
+            self.reset_denoise_sparse_attention_cache()
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
@@ -493,10 +533,16 @@ class PI0Pytorch(nn.Module):
 
         x_t = noise
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        if self._denoise_kv_mode in {"fresh", "current", "new"}:
+        if self._denoise_kv_mode in {"fresh", "current", "new", "sparse_attention", "sparse", "row_static"}:
             x_t = self._run_denoise_step_range(
                 0, num_steps, x_t, state, prefix_pad_masks, past_key_values, num_steps, device, bsize
             )
+            if self._denoise_kv_mode in {"sparse_attention", "sparse", "row_static"}:
+                self._last_kv_mode_stats = {
+                    "mode": "sparse_attention",
+                    "image_top_k": int(os.environ.get("PI05_DENOISE_SPARSE_IMAGE_TOP_K", "32")),
+                    "prompt_top_k": os.environ.get("PI05_DENOISE_SPARSE_PROMPT_TOP_K", "32"),
+                }
             return x_t
 
         step_idx = 0
@@ -768,7 +814,7 @@ class PI0Pytorch(nn.Module):
             return mixed_past_key_values, current_prefix_pad_masks
 
         raise ValueError(
-            "Unsupported PI05_DENOISE_KV_MODE. Use fresh, layer_accumulate, or step_cutoff."
+            "Unsupported PI05_DENOISE_KV_MODE. Use fresh, sparse_attention, layer_accumulate, or step_cutoff."
         )
 
     def denoise_step(

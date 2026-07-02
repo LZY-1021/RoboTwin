@@ -353,6 +353,18 @@ def eager_attention_forward(
     dropout: float = 0.0,
     **kwargs,
 ):
+    if getattr(module, "use_row_static_step0_sensitive_kv", False):
+        return row_static_step0_sensitive_kv_attention_forward(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            scaling,
+            dropout=dropout,
+            **kwargs,
+        )
+
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
@@ -373,6 +385,170 @@ def eager_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
+
+
+def _candidate_static_ranges(module: nn.Module, static_len: int) -> list[dict[str, int | str]]:
+    ranges = []
+    for idx, (start, end) in enumerate(module.static_sensitive_image_ranges):
+        if end <= static_len:
+            ranges.append({"name": f"image_{idx}", "start": int(start), "end": int(end), "length": int(end - start)})
+
+    prompt_start = max(end for _, end in module.static_sensitive_image_ranges)
+    prompt_top_k = module.static_sensitive_prompt_top_k
+    if prompt_top_k is not None and prompt_start < static_len:
+        ranges.append(
+            {
+                "name": "prompt_static",
+                "start": int(prompt_start),
+                "end": int(static_len),
+                "length": int(static_len - prompt_start),
+            }
+        )
+    return ranges
+
+
+def row_static_step0_sensitive_kv_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    """Sparse denoise attention using step-0 row-static sensitive K/V columns."""
+    if module.training or dropout != 0.0:
+        return module._dense_attention_forward(query, key, value, attention_mask, scaling, dropout)
+
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+    static_len = key_states.shape[-2] - query.shape[-2]
+    max_image_end = max(end for _, end in module.static_sensitive_image_ranges)
+    if static_len < max_image_end:
+        return module._dense_attention_forward(query, key, value, attention_mask, scaling, dropout)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    candidate_ranges = _candidate_static_ranges(module, static_len)
+    attn_probs = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    previous = module._row_static_step0_sensitive_cache
+
+    if previous is None:
+        row_fixed_indices_by_range = {}
+        static_output = torch.zeros_like(query)
+        for candidate_range in candidate_ranges:
+            start = int(candidate_range["start"])
+            end = int(candidate_range["end"])
+            range_top_k = (
+                module.static_sensitive_prompt_top_k
+                if candidate_range["name"] == "prompt_static"
+                else module.static_sensitive_image_top_k
+            )
+            range_k = min(int(range_top_k), int(candidate_range["length"]))
+            profile_logits = attn_weights[..., start:end]
+            row_fixed_local_indices = torch.topk(profile_logits, k=range_k, dim=-1).indices
+            row_fixed_indices_by_range[candidate_range["name"]] = row_fixed_local_indices.detach()
+            static_output = static_output + torch.matmul(attn_probs[..., start:end], value_states[..., start:end, :])
+
+        module._row_static_step0_sensitive_cache = {
+            "query": query.detach(),
+            "logits": attn_weights.detach(),
+            "probs": attn_probs.detach(),
+            "static_output": static_output.detach(),
+            "row_fixed_indices_by_range": row_fixed_indices_by_range,
+            "static_len": int(static_len),
+        }
+        if os.environ.get("PI05_TRACE_SAVE_QK_LOGITS", "0") == "1":
+            module._pi05_last_query_states = query.detach()
+            module._pi05_last_key_states = key_states.detach()
+            module._pi05_last_value_states = value_states.detach()
+            module._pi05_last_attn_logits = attn_weights.detach()
+        dense_output = torch.matmul(attn_probs, value_states).transpose(1, 2).contiguous()
+        return dense_output, attn_probs
+
+    if previous["static_len"] != int(static_len):
+        module.reset_row_static_step0_sensitive_kv_cache()
+        return row_static_step0_sensitive_kv_attention_forward(
+            module, query, key, value, attention_mask, scaling, dropout=dropout, **kwargs
+        )
+
+    previous_logits = previous["logits"].to(device=attn_weights.device, dtype=attn_weights.dtype)
+    previous_query = previous["query"].to(device=query.device, dtype=query.dtype)
+    previous_probs = previous["probs"].to(device=attn_probs.device, dtype=attn_probs.dtype)
+    approx_logits = previous_logits.clone()
+    approx_logits[..., static_len:] = attn_weights[..., static_len:]
+    delta_query = query - previous_query
+
+    selected_delta_pv = torch.zeros_like(query)
+    for candidate_range in candidate_ranges:
+        start = int(candidate_range["start"])
+        end = int(candidate_range["end"])
+        selected_local_indices = previous["row_fixed_indices_by_range"][candidate_range["name"]].to(device=query.device)
+        previous_range_logits = previous_logits[..., start:end]
+
+        range_keys = key_states[..., start:end, :]
+        selected_keys = range_keys.unsqueeze(2).expand(
+            range_keys.shape[0],
+            range_keys.shape[1],
+            selected_local_indices.shape[2],
+            range_keys.shape[2],
+            range_keys.shape[3],
+        ).gather(
+            3,
+            selected_local_indices.unsqueeze(-1).expand(*selected_local_indices.shape, range_keys.shape[-1]),
+        )
+        delta_logits_selected = torch.einsum("bhqd,bhqkd->bhqk", delta_query, selected_keys) * scaling
+        approx_selected_logits = previous_range_logits.gather(-1, selected_local_indices) + delta_logits_selected
+        approx_range_logits = approx_logits[..., start:end].clone()
+        approx_range_logits.scatter_(-1, selected_local_indices, approx_selected_logits)
+        approx_logits[..., start:end] = approx_range_logits
+
+    approx_probs = nn.functional.softmax(approx_logits, dim=-1, dtype=torch.float32).to(query.dtype)
+
+    for candidate_range in candidate_ranges:
+        start = int(candidate_range["start"])
+        end = int(candidate_range["end"])
+        selected_local_indices = previous["row_fixed_indices_by_range"][candidate_range["name"]].to(device=query.device)
+        range_values = value_states[..., start:end, :]
+        selected_values = range_values.unsqueeze(2).expand(
+            range_values.shape[0],
+            range_values.shape[1],
+            selected_local_indices.shape[2],
+            range_values.shape[2],
+            range_values.shape[3],
+        ).gather(
+            3,
+            selected_local_indices.unsqueeze(-1).expand(*selected_local_indices.shape, range_values.shape[-1]),
+        )
+        delta_p_selected = (
+            approx_probs[..., start:end].gather(-1, selected_local_indices)
+            - previous_probs[..., start:end].gather(-1, selected_local_indices)
+        )
+        selected_delta_pv = selected_delta_pv + torch.einsum("bhqk,bhqkd->bhqd", delta_p_selected, selected_values)
+
+    previous_static_output = previous["static_output"].to(device=query.device, dtype=query.dtype)
+    static_output = previous_static_output + selected_delta_pv
+    dynamic_output = torch.matmul(approx_probs[..., static_len:], value_states[..., static_len:, :])
+    attn_output = (static_output + dynamic_output).transpose(1, 2).contiguous()
+
+    module._row_static_step0_sensitive_cache = {
+        "query": query.detach(),
+        "logits": approx_logits.detach(),
+        "probs": approx_probs.detach(),
+        "static_output": static_output.detach(),
+        "row_fixed_indices_by_range": previous["row_fixed_indices_by_range"],
+        "static_len": int(static_len),
+    }
+    if os.environ.get("PI05_TRACE_SAVE_QK_LOGITS", "0") == "1":
+        module._pi05_last_query_states = query.detach()
+        module._pi05_last_key_states = key_states.detach()
+        module._pi05_last_value_states = value_states.detach()
+        module._pi05_last_attn_logits = approx_logits.detach()
+    return attn_output, approx_probs
 
 
 class GemmaAttention(nn.Module):
@@ -400,6 +576,46 @@ class GemmaAttention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
+        self.use_row_static_step0_sensitive_kv = False
+        self.static_sensitive_image_ranges = ((0, 256), (256, 512), (512, 768))
+        self.static_sensitive_image_top_k = 32
+        self.static_sensitive_prompt_top_k = 32
+        self._row_static_step0_sensitive_cache = None
+
+    def enable_row_static_step0_sensitive_kv(
+        self,
+        image_ranges: tuple[tuple[int, int], ...] = ((0, 256), (256, 512), (512, 768)),
+        image_top_k: int = 32,
+        prompt_top_k: int | None = 32,
+    ):
+        self.static_sensitive_image_ranges = tuple((int(start), int(end)) for start, end in image_ranges)
+        self.static_sensitive_image_top_k = int(image_top_k)
+        self.static_sensitive_prompt_top_k = None if prompt_top_k is None else int(prompt_top_k)
+        self.reset_row_static_step0_sensitive_kv_cache()
+        self.use_row_static_step0_sensitive_kv = True
+
+    def disable_row_static_step0_sensitive_kv(self):
+        self.use_row_static_step0_sensitive_kv = False
+        self.reset_row_static_step0_sensitive_kv_cache()
+
+    def reset_row_static_step0_sensitive_kv_cache(self):
+        self._row_static_step0_sensitive_cache = None
+
+    def _dense_attention_forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        scaling: float,
+        dropout: float = 0.0,
+    ):
+        was_enabled = self.use_row_static_step0_sensitive_kv
+        self.use_row_static_step0_sensitive_kv = False
+        try:
+            return eager_attention_forward(self, query, key, value, attention_mask, scaling, dropout=dropout)
+        finally:
+            self.use_row_static_step0_sensitive_kv = was_enabled
 
     def forward(
         self,
