@@ -61,6 +61,18 @@ def _optional_int_env(name: str, default: int | None) -> int | None:
     return int(value)
 
 
+def _maybe_seed_sample_noise(device) -> int | None:
+    value = os.environ.get("PI05_SAMPLE_SEED")
+    if value is None or value.strip() == "":
+        return None
+    seed = int(value)
+    torch.manual_seed(seed)
+    device_str = str(device)
+    if device_str.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    return seed
+
+
 def make_att_2d_masks(pad_masks, att_masks):
     """Copied from big_vision.
 
@@ -467,8 +479,11 @@ class PI0Pytorch(nn.Module):
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         bsize = observation.state.shape[0]
         if noise is None:
+            self._last_sample_seed = _maybe_seed_sample_noise(device)
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
+        else:
+            self._last_sample_seed = None
         if self._denoise_kv_mode in {"sparse_attention", "sparse", "row_static"}:
             self.reset_denoise_sparse_attention_cache()
 
