@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import math
 import sapien
+import os
 
 
 class place_shoe(Base_Task):
@@ -47,7 +48,17 @@ class place_shoe(Base_Task):
                 rotate_lim=[0, 3.14, 0],
                 qpos=[0.707, 0.707, 0, 0],
             )
-        self.shoe_id = np.random.choice([i for i in range(10)])
+        target_cell = os.environ.get(
+            "ROBOTWIN_PLACE_SHOE_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.place_shoe_grid import (
+                place_shoe_cell_from_label,
+            )
+
+            self.shoe_id = place_shoe_cell_from_label(target_cell).model_id
+        else:
+            self.shoe_id = np.random.choice([i for i in range(10)])
         self.shoe = create_actor(
             scene=self,
             pose=shoes_pose,

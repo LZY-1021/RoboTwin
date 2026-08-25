@@ -14,6 +14,20 @@ import envs._GLOBAL_CONFIGS as CONFIGS
 from envs.utils import transforms
 from .planner import CuroboPlanner
 import torch.multiprocessing as mp
+import torch
+from robotwin_curobo_gate import should_skip_curobo_for_qpos
+
+
+class _GripperInterpolationPlanner:
+    """CuRobo-compatible gripper interpolation without CUDA allocation."""
+
+    def plan_grippers(self, now_val, target_val):
+        num_step = 200
+        return {
+            "num_step": num_step,
+            "per_step": (target_val - now_val) / num_step,
+            "result": np.linspace(now_val, target_val, num_step),
+        }
 
 
 class Robot:
@@ -26,9 +40,13 @@ class Robot:
     def _init_robot_(self, scene, need_topp=False, **kwargs):
         # self.dual_arm = dual_arm_tag
         # self.plan_success = True
+        self._scene = scene
 
         self.left_js = None
         self.right_js = None
+        self.left_planner = None
+        self.right_planner = None
+        self.communication_flag = False
 
         left_embodiment_args = kwargs["left_embodiment_config"]
         right_embodiment_args = kwargs["right_embodiment_config"]
@@ -227,7 +245,149 @@ class Robot:
                 damping=self.right_gripper_damping,
             )
 
+    def _gpu_control_mode(self):
+        return os.environ.get("ROBOTWIN_GPU_CONTROL_MODE", "").lower()
+
+    def _gpu_qpos_control_enabled(self):
+        """Legacy experimental direct-qpos controller.
+
+        This mode intentionally remains available for debugging, but it is
+        not equivalent to RoboTwin's normal drive/PD controller because it
+        teleports articulation positions.
+        """
+        backend = os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower()
+        return backend in {"gpu", "cuda"} and self._gpu_control_mode() in {"qpos", "qpos_teleport"}
+
+    def _gpu_target_control_enabled(self):
+        """Use SAPIEN's GPU articulation target buffers with the normal drives."""
+        backend = os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower()
+        return backend in {"gpu", "cuda"} and self._gpu_control_mode() in {
+            "target", "target_pd", "drive", "gpu_target",
+        }
+
+    def _gpu_sim_ready(self):
+        """Whether SAPIEN's GPU buffers are available yet."""
+        if not hasattr(self._scene, "physx_system"):
+            return False
+        try:
+            _ = self._scene.physx_system.cuda_articulation_target_qpos
+            return True
+        except RuntimeError:
+            return False
+
+    def _gpu_read_qpos(self, entity):
+        self._scene.physx_system.gpu_fetch_articulation_qpos()
+        return np.asarray(entity.get_qpos(), dtype=np.float32).copy()
+
+    def _gpu_write_qpos(self, entity, qpos):
+        entity.set_qpos(np.asarray(qpos, dtype=np.float32))
+        self._scene.physx_system.gpu_apply_articulation_qpos()
+
+    def _gpu_target_row(self, entity):
+        """Return the CUDA target rows for one articulation.
+
+        SAPIEN exposes one row per articulation and one column per active
+        joint.  Mutating this view stays on CUDA; no qpos round-trip through
+        the CPU is needed.
+        """
+        system = self._scene.physx_system
+        index = int(entity.gpu_index)
+        return (
+            system.cuda_articulation_target_qpos.torch()[index],
+            system.cuda_articulation_target_qvel.torch()[index],
+        )
+
+    def _gpu_passive_force_enabled(self):
+        """Enable CPU-computed passive force copied into the GPU qf buffer."""
+        return os.environ.get("ROBOTWIN_GPU_PASSIVE_FORCE", "1").lower() not in {
+            "0", "false", "off", "no",
+        }
+
+    def _gpu_apply_passive_force(self, entity):
+        """Apply RoboTwin's CPU passive-force definition through GPU qf.
+
+        SAPIEN exposes the CUDA qf buffer and its apply operation, but this
+        version does not expose a CUDA implementation of
+        compute_passive_force(). Fetching qpos/qvel first keeps this helper
+        semantically aligned with the CPU set_qf path; the transfer is an
+        intentional correctness trade-off.
+        """
+        if not self._gpu_passive_force_enabled():
+            return
+        system = self._scene.physx_system
+        system.gpu_fetch_articulation_qpos()
+        system.gpu_fetch_articulation_qvel()
+        passive_force = entity.compute_passive_force(
+            gravity=True,
+            coriolis_and_centrifugal=True,
+        )
+        qf = system.cuda_articulation_qf.torch()
+        qf_row = qf[int(entity.gpu_index)]
+        qf_row.copy_(torch.as_tensor(passive_force, device=qf_row.device, dtype=qf_row.dtype))
+        system.gpu_apply_articulation_qf()
+
+    def _gpu_set_target_joints(self, entity, joints, target_position, target_velocity=None):
+        """Write joint targets to PhysX GPU buffers and apply them.
+
+        Unlike the old qpos mode, this leaves integration, PD drives,
+        contacts, and gripper dynamics inside PhysX.  CPU mode never enters
+        this method and therefore keeps the original behavior unchanged.
+        """
+        self._ensure_gpu_target_buffers()
+        self._gpu_apply_passive_force(entity)
+        qpos_row, qvel_row = self._gpu_target_row(entity)
+        active_joints = entity.get_active_joints()
+        indices = [active_joints.index(joint) for joint in joints]
+        pos = np.asarray(target_position, dtype=np.float32)
+        qpos_row[indices] = torch.as_tensor(pos, device=qpos_row.device)
+        cache = self._gpu_target_cache[id(entity)]
+        cache["qpos"][indices] = pos
+        if target_velocity is not None:
+            vel = np.asarray(target_velocity, dtype=np.float32)
+            qvel_row[indices] = torch.as_tensor(vel, device=qvel_row.device)
+            cache["qvel"][indices] = vel
+            self._scene.physx_system.gpu_apply_articulation_target_velocity()
+        self._scene.physx_system.gpu_apply_articulation_target_position()
+
+    def _ensure_gpu_target_buffers(self):
+        if not hasattr(self, "_gpu_target_buffers_ready"):
+            self._gpu_target_buffers_ready = False
+        if self._gpu_target_buffers_ready:
+            return
+        if not hasattr(self._scene, "physx_system"):
+            raise RuntimeError("GPU target control requires a PhysxGpuSystem scene")
+        # The task initializes GPU PhysX after all actors are loaded.  At this
+        # point SAPIEN has populated target_qpos/qvel from any drive targets
+        # set during RoboTwin's normal homestate/gripper initialization.
+        self._scene.physx_system.gpu_fetch_articulation_target_qpos()
+        self._scene.physx_system.gpu_fetch_articulation_target_qvel()
+        target_qpos = self._scene.physx_system.cuda_articulation_target_qpos.torch()
+        target_qvel = self._scene.physx_system.cuda_articulation_target_qvel.torch()
+        self._gpu_target_cache = {}
+        for entity in {self.left_entity, self.right_entity}:
+            index = int(entity.gpu_index)
+            self._gpu_target_cache[id(entity)] = {
+                "qpos": target_qpos[index].detach().cpu().numpy().copy(),
+                "qvel": target_qvel[index].detach().cpu().numpy().copy(),
+            }
+        self._gpu_target_buffers_ready = True
+
+    def _gpu_set_joint_targets(self, entity, joints, targets):
+        qpos = self._gpu_read_qpos(entity)
+        active_joints = entity.get_active_joints()
+        for joint, target in zip(joints, targets):
+            qpos[active_joints.index(joint)] = float(target)
+        self._gpu_write_qpos(entity, qpos)
+
     def move_to_homestate(self):
+        if self._gpu_qpos_control_enabled():
+            self._gpu_set_joint_targets(self.left_entity, self.left_arm_joints, self.left_homestate)
+            self._gpu_set_joint_targets(self.right_entity, self.right_arm_joints, self.right_homestate)
+            return
+        if self._gpu_target_control_enabled() and self._gpu_sim_ready():
+            self._gpu_set_target_joints(self.left_entity, self.left_arm_joints, self.left_homestate)
+            self._gpu_set_target_joints(self.right_entity, self.right_arm_joints, self.right_homestate)
+            return
         for i, joint in enumerate(self.left_arm_joints):
             joint.set_drive_target(self.left_homestate[i])
 
@@ -255,6 +415,45 @@ class Robot:
         print("right ee: ", self.right_ee.get_name())
 
     def set_planner(self, scene=None):
+        # Joint-space policy evaluation uses mplib/TOPP and does not need
+        # CuRobo. Keep this opt-in and qpos-only so expert/EE paths retain
+        # the original collision-aware planner.
+        if should_skip_curobo_for_qpos():
+            self.communication_flag = False
+            # qpos rollout still uses the planner interface for gripper
+            # interpolation; this helper has the same 200-step linear
+            # interpolation contract as CuroboPlanner.plan_grippers().
+            self.left_planner = _GripperInterpolationPlanner()
+            self.right_planner = _GripperInterpolationPlanner()
+            if self.need_topp:
+                if os.environ.get("ROBOTWIN_GPU_PHYSICS_SKIP_MPLIB", "0") == "1":
+                    # MPLib reads CPU articulation qpos during construction;
+                    # that accessor is incompatible with SAPIEN GPU PhysX.
+                    # Qpos-only GPU profiling does not need collision-aware
+                    # planners, so leave these optional planners disabled.
+                    self.left_mplib_planner = None
+                    self.right_mplib_planner = None
+                    return
+                self.left_mplib_planner = MplibPlanner(
+                    self.left_urdf_path,
+                    self.left_srdf_path,
+                    self.left_move_group,
+                    self.left_entity_origion_pose,
+                    self.left_entity,
+                    self.left_planner_type,
+                    scene,
+                )
+                self.right_mplib_planner = MplibPlanner(
+                    self.right_urdf_path,
+                    self.right_srdf_path,
+                    self.right_move_group,
+                    self.right_entity_origion_pose,
+                    self.right_entity,
+                    self.right_planner_type,
+                    scene,
+                )
+            return
+
         abs_left_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.left_curobo_yml_path)
         abs_right_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.right_curobo_yml_path)
 
@@ -492,6 +691,14 @@ class Robot:
 
     # The data of gripper has been normalized
     def get_left_arm_jointState(self) -> list:
+        if self._gpu_qpos_control_enabled():
+            qpos = self._gpu_read_qpos(self.left_entity)
+            active_joints = self.left_entity.get_active_joints()
+            return [float(qpos[active_joints.index(joint)]) for joint in self.left_arm_joints] + [self.get_left_gripper_val()]
+        if self._gpu_target_control_enabled() and getattr(self, "_gpu_target_buffers_ready", False):
+            qpos = self._gpu_target_cache[id(self.left_entity)]["qpos"]
+            active_joints = self.left_entity.get_active_joints()
+            return [float(qpos[active_joints.index(joint)]) for joint in self.left_arm_joints] + [self.get_left_gripper_val()]
         jointState_list = []
         for joint in self.left_arm_joints:
             jointState_list.append(joint.get_drive_target()[0].astype(float))
@@ -499,6 +706,14 @@ class Robot:
         return jointState_list
 
     def get_right_arm_jointState(self) -> list:
+        if self._gpu_qpos_control_enabled():
+            qpos = self._gpu_read_qpos(self.right_entity)
+            active_joints = self.right_entity.get_active_joints()
+            return [float(qpos[active_joints.index(joint)]) for joint in self.right_arm_joints] + [self.get_right_gripper_val()]
+        if self._gpu_target_control_enabled() and getattr(self, "_gpu_target_buffers_ready", False):
+            qpos = self._gpu_target_cache[id(self.right_entity)]["qpos"]
+            active_joints = self.right_entity.get_active_joints()
+            return [float(qpos[active_joints.index(joint)]) for joint in self.right_arm_joints] + [self.get_right_gripper_val()]
         jointState_list = []
         for joint in self.right_arm_joints:
             jointState_list.append(joint.get_drive_target()[0].astype(float))
@@ -607,6 +822,22 @@ class Robot:
         entity.set_qf(qf)
 
     def set_arm_joints(self, target_position, target_velocity, arm_tag):
+        if self._gpu_qpos_control_enabled():
+            if arm_tag == "left":
+                self._gpu_set_joint_targets(self.left_entity, self.left_arm_joints, target_position)
+            else:
+                self._gpu_set_joint_targets(self.right_entity, self.right_arm_joints, target_position)
+            return
+        if self._gpu_target_control_enabled() and self._gpu_sim_ready():
+            if arm_tag == "left":
+                self._gpu_set_target_joints(
+                    self.left_entity, self.left_arm_joints, target_position, target_velocity
+                )
+            else:
+                self._gpu_set_target_joints(
+                    self.right_entity, self.right_arm_joints, target_position, target_velocity
+                )
+            return
         self._entity_qf(self.left_entity)
         self._entity_qf(self.right_entity)
 
@@ -626,6 +857,48 @@ class Robot:
         return [normal_left_gripper_val, normal_right_gripper_val]
 
     def set_gripper(self, gripper_val, arm_tag, gripper_eps=0.1):  # gripper_val in [0,1]
+        if self._gpu_qpos_control_enabled():
+            gripper_val = float(np.clip(gripper_val, 0, 1))
+            if arm_tag == "left":
+                joints = self.left_gripper
+                self.left_gripper_val = gripper_val
+                gripper_scale = self.left_gripper_scale
+                entity = self.left_entity
+            else:
+                joints = self.right_gripper
+                self.right_gripper_val = gripper_val
+                gripper_scale = self.right_gripper_scale
+                entity = self.right_entity
+            if not joints:
+                return
+            qpos = self._gpu_read_qpos(entity)
+            active_joints = entity.get_active_joints()
+            real_gripper_val = gripper_scale[0] + gripper_val * (gripper_scale[1] - gripper_scale[0])
+            for joint, multiplier, bias in joints:
+                qpos[active_joints.index(joint)] = real_gripper_val * multiplier + bias
+            self._gpu_write_qpos(entity, qpos)
+            return
+        if self._gpu_target_control_enabled() and self._gpu_sim_ready():
+            gripper_val = float(np.clip(gripper_val, 0, 1))
+            if arm_tag == "left":
+                joints = self.left_gripper
+                self.left_gripper_val = gripper_val
+                gripper_scale = self.left_gripper_scale
+                entity = self.left_entity
+            else:
+                joints = self.right_gripper
+                self.right_gripper_val = gripper_val
+                gripper_scale = self.right_gripper_scale
+                entity = self.right_entity
+            if not joints:
+                return
+            real_gripper_val = gripper_scale[0] + gripper_val * (gripper_scale[1] - gripper_scale[0])
+            self._gpu_set_target_joints(
+                entity,
+                [joint for joint, _, _ in joints],
+                [real_gripper_val * multiplier + bias for _, multiplier, bias in joints],
+            )
+            return
         self._entity_qf(self.left_entity)
         self._entity_qf(self.right_entity)
         gripper_val = np.clip(gripper_val, 0, 1)

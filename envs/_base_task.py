@@ -23,6 +23,7 @@ from pathlib import Path
 import trimesh
 import imageio
 import glob
+import time
 
 
 from ._GLOBAL_CONFIGS import *
@@ -31,6 +32,17 @@ from typing import Optional, Literal
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
+
+# Optional same-process renderer sharing for CPU multi-environment tests.
+# The default is disabled so ordinary RoboTwin evaluation is unchanged.
+_SHARED_RENDER_ENGINE = None
+_SHARED_RENDERER = None
+
+
+def _physics_only_worker_enabled() -> bool:
+    return os.environ.get("ROBOTWIN_PHYSICS_ONLY_WORKER", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 class Base_Task(gym.Env):
@@ -73,6 +85,19 @@ class Base_Task(gym.Env):
 
         # Random
         random_setting = kwags.get("domain_randomization")
+        self._limited_randomization_profile = {}
+        profile_path = os.environ.get("ROBOTWIN_RANDOMIZATION_PROFILE_FILE", "").strip()
+        if profile_path:
+            try:
+                with open(profile_path, "r", encoding="utf-8") as profile_file:
+                    loaded_profile = json.load(profile_file)
+                if not isinstance(loaded_profile, dict):
+                    raise TypeError("randomization profile must be a JSON object")
+                self._limited_randomization_profile = loaded_profile
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load ROBOTWIN_RANDOMIZATION_PROFILE_FILE={profile_path}: {exc}"
+                ) from exc
         self.random_background = random_setting.get("random_background", False)
         self.cluttered_table = random_setting.get("cluttered_table", False)
         self.clean_background_rate = random_setting.get("clean_background_rate", 1)
@@ -82,6 +107,12 @@ class Base_Task(gym.Env):
         self.crazy_random_light_rate = random_setting.get("crazy_random_light_rate", 0)
         self.crazy_random_light = (0 if not self.random_light else np.random.rand() < self.crazy_random_light_rate)
         self.random_embodiment = random_setting.get("random_embodiment", False)  # TODO
+        if self._limited_randomization_profile.get("table_height_randomized") is False:
+            self.random_table_height = 0.0
+        if "clean_background_rate" in self._limited_randomization_profile:
+            self.clean_background_rate = float(
+                self._limited_randomization_profile["clean_background_rate"]
+            )
 
         self.file_path = []
         self.plan_success = True
@@ -120,20 +151,38 @@ class Base_Task(gym.Env):
         self.create_table_and_wall(table_xy_bias=table_xy_bias, table_height=0.74)
         self.load_robot(**kwags)
         self.load_camera(**kwags)
-        self.robot.move_to_homestate()
+        if not getattr(self, "_metadata_only", False):
+            self.robot.move_to_homestate()
 
         render_freq = self.render_freq
         self.render_freq = 0
-        self.together_open_gripper(save_freq=None)
+        if not getattr(self, "_metadata_only", False):
+            self.together_open_gripper(save_freq=None)
         self.render_freq = render_freq
 
         self.robot.set_origin_endpose()
+        if os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower() in {"gpu", "cuda"}:
+            # Some task load_actors() implementations step the scene before
+            # returning, so invalidate the warm-up after the scene changes.
+            self._gpu_sim_initialized = False
         self.load_actors()
 
         if self.cluttered_table:
             self.get_cluttered_table()
 
-        is_stable, unstable_list = self.check_stable()
+        # SAPIEN GPU PhysX allocates its CUDA buffers only after all bodies
+        # have been added. Without this warm-up, the first scene.step()
+        # fails with: "gpu simulation is not initialized".
+        if os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower() in {"gpu", "cuda"}:
+            self.scene.physx_system.gpu_init()
+            self._gpu_sim_initialized = True
+
+        if getattr(self, "_metadata_only", False):
+            # Seed-only FrozenCase collection only needs a constructible scene;
+            # baseline success/failure is intentionally not a build filter.
+            is_stable, unstable_list = True, []
+        else:
+            is_stable, unstable_list = self.check_stable()
         if not is_stable:
             raise UnStableError(
                 f'Objects is unstable in seed({kwags.get("seed", 0)}), unstable objects: {", ".join(unstable_list)}')
@@ -158,7 +207,16 @@ class Base_Task(gym.Env):
 
         self.stage_success_tag = False
 
+    def _ensure_gpu_sim_initialized(self):
+        if (
+            os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower() in {"gpu", "cuda"}
+            and not getattr(self, "_gpu_sim_initialized", False)
+        ):
+            self.scene.physx_system.gpu_init()
+            self._gpu_sim_initialized = True
+
     def check_stable(self):
+        self._ensure_gpu_sim_initialized()
         actors_list, actors_pose_list = [], []
         for actor in self.scene.get_all_actors():
             actors_list.append(actor)
@@ -202,23 +260,66 @@ class Base_Task(gym.Env):
         Set the scene
             - Set up the basic scene: light source, viewer.
         """
-        self.engine = sapien.Engine()
+        global _SHARED_RENDER_ENGINE, _SHARED_RENDERER
+        physics_only = _physics_only_worker_enabled()
+        self._physics_only_worker = physics_only
+        share_renderer = (
+            os.environ.get("ROBOTWIN_SHARED_RENDERER", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and not physics_only
+            and os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower()
+            not in {"gpu", "cuda"}
+        )
+
+        if physics_only:
+            self.engine = sapien.Engine()
+            self.renderer = None
+        elif share_renderer and _SHARED_RENDER_ENGINE is not None:
+            self.engine = _SHARED_RENDER_ENGINE
+            self.renderer = _SHARED_RENDERER
+        else:
+            self.engine = sapien.Engine()
+            self.renderer = sapien.SapienRenderer()
+            if share_renderer:
+                _SHARED_RENDER_ENGINE = self.engine
+                _SHARED_RENDERER = self.renderer
+
         # declare sapien renderer
-        from sapien.render import set_global_config
+        if not physics_only:
+            from sapien.render import set_global_config
 
-        set_global_config(max_num_materials=50000, max_num_textures=50000)
-        self.renderer = sapien.SapienRenderer()
-        # give renderer to sapien sim
-        self.engine.set_renderer(self.renderer)
+            set_global_config(max_num_materials=50000, max_num_textures=50000)
+            # give renderer to sapien sim
+            self.engine.set_renderer(self.renderer)
 
-        sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
-        sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("oidn")
+            sapien.render.set_camera_shader_dir("rt")
+            sapien.render.set_ray_tracing_samples_per_pixel(32)
+            sapien.render.set_ray_tracing_path_depth(8)
+            sapien.render.set_ray_tracing_denoiser("oidn")
 
-        # declare sapien scene
+        # declare sapien scene.  RoboTwin historically uses the CPU PhysX
+        # system.  Keep that as the default; the GPU backend is opt-in for
+        # isolated profiling because SAPIEN GPU PhysX can change contact and
+        # stability numerics relative to the CPU solver.
         scene_config = sapien.SceneConfig()
-        self.scene = self.engine.create_scene(scene_config)
+        physics_backend = os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower()
+        if physics_only:
+            # CPU PhysX scene without cameras/render systems.  The coordinator
+            # owns the render-only mirrors and calls get_obs there.
+            self.scene = self.engine.create_scene(scene_config)
+        elif physics_backend in {"gpu", "cuda"}:
+            # Public helper downloads the matching PhysX GPU runtime when it
+            # is not present under ~/.sapien/physx/<physx-version>/.
+            sapien.physx.enable_gpu()
+            sapien.physx.set_scene_config(scene_config)
+            self.scene = sapien.Scene([
+                sapien.physx.PhysxGpuSystem(),
+                sapien.render.RenderSystem(),
+            ])
+            print("ROBOTWIN_PHYSICS_BACKEND=gpu", flush=True)
+        else:
+            self.scene = self.engine.create_scene(scene_config)
+        self._gpu_sim_initialized = False
         # set simulation timestep
         self.scene.set_timestep(kwargs.get("timestep", 1 / 250))
         # add ground to scene
@@ -275,16 +376,28 @@ class Base_Task(gym.Env):
 
         if self.random_background:
             texture_type = "seen" if not self.eval_mode else "unseen"
-            directory_path = f"./assets/background_texture/{texture_type}"
-            file_count = len(
-                [name for name in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, name))])
+            texture_palette = self._limited_randomization_profile.get("texture_palette", {})
+            background_palette = texture_palette.get("background", [])
+            table_palette = texture_palette.get("table", [])
+            if background_palette and table_palette:
+                def _texture_ref(value):
+                    value = str(value)
+                    return value if "/" in value else f"{texture_type}/{value}"
 
-            # wall_texture, table_texture = random.randint(0, file_count - 1), random.randint(0, file_count - 1)
-            wall_texture, table_texture = np.random.randint(0, file_count), np.random.randint(0, file_count)
+                wall_texture = _texture_ref(np.random.choice(background_palette))
+                table_texture = _texture_ref(np.random.choice(table_palette))
+            else:
+                directory_path = f"./assets/background_texture/{texture_type}"
+                file_count = len(
+                    [name for name in os.listdir(directory_path)
+                     if os.path.isfile(os.path.join(directory_path, name))])
+                wall_texture, table_texture = (
+                    np.random.randint(0, file_count), np.random.randint(0, file_count)
+                )
 
             self.wall_texture, self.table_texture = (
-                f"{texture_type}/{wall_texture}",
-                f"{texture_type}/{table_texture}",
+                wall_texture if isinstance(wall_texture, str) else f"{texture_type}/{wall_texture}",
+                table_texture if isinstance(table_texture, str) else f"{texture_type}/{table_texture}",
             )
             if np.random.rand() <= self.clean_background_rate:
                 self.wall_texture = None
@@ -387,6 +500,13 @@ class Base_Task(gym.Env):
         """
         if not hasattr(self, "robot"):
             self.robot = Robot(self.scene, self.need_topp, **kwags)
+            # MPLib/SapienPlanningWorld reads articulation qpos during
+            # planner construction.  GPU PhysX must therefore be initialized
+            # once immediately after the robot articulation exists.  The
+            # later init in _init_task_env_ remains necessary after task
+            # actors have been added.  CPU scenes never enter this branch.
+            if os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower() in {"gpu", "cuda"}:
+                self.scene.physx_system.gpu_init()
             self.robot.set_planner(self.scene)
             self.robot.init_joints()
         else:
@@ -405,12 +525,37 @@ class Base_Task(gym.Env):
             - Including four cameras: left, right, front, head.
         """
 
+        if getattr(self, "_physics_only_worker", False):
+            self.cameras = None
+            # Camera.load_camera consumes NumPy RNG values while constructing
+            # each static camera, even when random_head_camera_dis == 0.
+            # Consume the same stream without allocating renderer cameras so
+            # subsequent task randomization matches native RoboTwin exactly.
+            camera_cfg = kwags.get("camera", {})
+            collect_head = bool(camera_cfg.get("collect_head_camera", True))
+            head_dis = kwags.get("random_head_camera_dis", 0)
+            embodiment_cfg = kwags.get("left_embodiment_config", {})
+            for camera_info in embodiment_cfg.get("static_camera_list", []):
+                is_head = camera_info.get("name") == "head_camera"
+                if is_head and not collect_head:
+                    continue
+                np.random.randn(3)
+                np.random.uniform(low=0, high=(head_dis if is_head else 0))
+            # Match native load_camera's initial physics warm-up.
+            self.scene.step()
+            return
+
         self.cameras = Camera(
             bias=self.table_z_bias,
             random_head_camera_dis=self.random_head_camera_dis,
             **kwags,
         )
         self.cameras.load_camera(self.scene)
+        # Camera setup performs an initial physics step.  GPU PhysX needs its
+        # CUDA buffers initialized before that first step; task actors added
+        # later trigger another gpu_init() in _init_task_env_.
+        if os.environ.get("ROBOTWIN_PHYSICS_BACKEND", "cpu").lower() in {"gpu", "cuda"}:
+            self.scene.physx_system.gpu_init()
         self.scene.step()  # run a physical step
         self.scene.update_render()  # sync pose from SAPIEN to renderer
 
@@ -421,6 +566,7 @@ class Base_Task(gym.Env):
         Update rendering to refresh the camera's RGBD information
         (rendering must be updated even when disabled, otherwise data cannot be collected).
         """
+        _render_t0 = time.perf_counter() if hasattr(self, "_robotwin_timing") else 0.0
         if self.crazy_random_light:
             for renderColor in self.point_light_lst:
                 renderColor.set_color([np.random.rand(), np.random.rand(), np.random.rand()])
@@ -431,10 +577,18 @@ class Base_Task(gym.Env):
             self.scene.set_ambient_light(now_ambient_light)
         self.cameras.update_wrist_camera(self.robot.left_camera.get_pose(), self.robot.right_camera.get_pose())
         self.scene.update_render()
+        if hasattr(self, "_robotwin_timing"):
+            self._robotwin_timing["render_s"] += time.perf_counter() - _render_t0
+            self._robotwin_timing["render_count"] += 1
 
     # =========================================================== Basic APIs ===========================================================
 
     def get_obs(self):
+        if getattr(self, "_physics_only_worker", False):
+            raise RuntimeError(
+                "ROBOTWIN_PHYSICS_ONLY_WORKER does not expose observations; "
+                "use a render-mirror coordinator"
+            )
         self._update_render()
         self.cameras.update_picture()
         pkl_dic = {
@@ -589,6 +743,8 @@ class Base_Task(gym.Env):
             del self.eval_video_ffmpeg
 
     def delay(self, delay_time, save_freq=None):
+        if getattr(self, "_metadata_only", False):
+            return
         render_freq = self.render_freq
         self.render_freq = 0
 
@@ -890,6 +1046,11 @@ class Base_Task(gym.Env):
         """
         Take action for the robot.
         """
+
+        # Seed-only FrozenCase builds call task play_once() to populate
+        # instruction metadata, but must not run cuRobo or advance the scene.
+        if getattr(self, "_metadata_only", False):
+            return True
 
         def get_actions(actions, arm_tag: ArmTag) -> list[Action]:
             if actions[1] is None:
@@ -1431,6 +1592,7 @@ class Base_Task(gym.Env):
         if right_gripper is not None:
             max_control_len = max(max_control_len, right_gripper["num_step"])
 
+        self._ensure_gpu_sim_initialized()
         for control_idx in range(max_control_len):
 
             if (left_arm is not None and control_idx < left_arm["position"].shape[0]):  # control left arm
@@ -1480,6 +1642,17 @@ class Base_Task(gym.Env):
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
 
+        # In frozen qpos evaluation the policy only consumes observations
+        # produced by get_obs(). Rendering after every internal physics step
+        # is therefore redundant when video/viewer output is disabled. Keep
+        # this opt-in until a paired equivalence check passes.
+        defer_internal_render = (
+            os.environ.get("ROBOTWIN_DEFER_INTERNAL_RENDER", "0") == "1"
+            and not self.render_freq
+            and self.eval_video_path is None
+            and not self.save_data
+        )
+
         eval_video_freq = 1  # fixed
         if (self.eval_video_path is not None and self.take_action_cnt % eval_video_freq == 0):
             self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
@@ -1487,7 +1660,8 @@ class Base_Task(gym.Env):
         self.take_action_cnt += 1
         print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
 
-        self._update_render()
+        if not defer_internal_render:
+            self._update_render()
         if self.render_freq:
             self.viewer.render()
 
@@ -1539,6 +1713,7 @@ class Base_Task(gym.Env):
             # TODO
             topp_left_flag, topp_right_flag = True, True
 
+            _topp_t0 = time.perf_counter() if hasattr(self, "_robotwin_timing") else 0.0
             try:
                 times, left_pos, left_vel, acc, duration = (self.robot.left_mplib_planner.TOPP(left_path,
                                                                                             1 / 250,
@@ -1547,7 +1722,8 @@ class Base_Task(gym.Env):
                 left_result["position"], left_result["velocity"] = left_pos, left_vel
                 left_n_step = left_result["position"].shape[0]
             except Exception as e:
-                # print("left arm TOPP error: ", e)
+                if os.environ.get("ROBOTWIN_DEBUG_TOPP", "") == "1":
+                    print("left arm TOPP error:", repr(e), flush=True)
                 topp_left_flag = False
                 left_n_step = 50  # fixed
 
@@ -1555,6 +1731,10 @@ class Base_Task(gym.Env):
                 topp_left_flag = False
                 left_n_step = 50  # fixed
 
+            if hasattr(self, "_robotwin_timing"):
+                self._robotwin_timing["topp_s"] += time.perf_counter() - _topp_t0
+
+            _topp_t0 = time.perf_counter() if hasattr(self, "_robotwin_timing") else 0.0
             try:
                 times, right_pos, right_vel, acc, duration = (self.robot.right_mplib_planner.TOPP(right_path,
                                                                                                 1 / 250,
@@ -1563,9 +1743,13 @@ class Base_Task(gym.Env):
                 right_result["position"], right_result["velocity"] = right_pos, right_vel
                 right_n_step = right_result["position"].shape[0]
             except Exception as e:
-                # print("right arm TOPP error: ", e)
+                if os.environ.get("ROBOTWIN_DEBUG_TOPP", "") == "1":
+                    print("right arm TOPP error:", repr(e), flush=True)
                 topp_right_flag = False
                 right_n_step = 50  # fixed
+
+            if hasattr(self, "_robotwin_timing"):
+                self._robotwin_timing["topp_s"] += time.perf_counter() - _topp_t0
 
             if right_n_step == 0:
                 topp_right_flag = False
@@ -1651,17 +1835,31 @@ class Base_Task(gym.Env):
 
                 now_right_id += 1
 
+            _step_t0 = time.perf_counter() if hasattr(self, "_robotwin_timing") else 0.0
             self.scene.step()
-            self._update_render()
+            if hasattr(self, "_robotwin_timing"):
+                self._robotwin_timing["env_step_s"] += time.perf_counter() - _step_t0
+                self._robotwin_timing["env_step_count"] += 1
+            if not defer_internal_render:
+                self._update_render()
                 
-            if self.check_success():
+            _success_t0 = time.perf_counter() if hasattr(self, "_robotwin_timing") else 0.0
+            _is_success = self.check_success()
+            if hasattr(self, "_robotwin_timing"):
+                self._robotwin_timing["success_check_s"] += time.perf_counter() - _success_t0
+            if _is_success:
                 self.eval_success = True
-                self.get_obs() # update obs
-                if (self.eval_video_path is not None):
+                # Physics-only workers have no renderer/cameras.  The
+                # coordinator obtains the observation from its mirror after
+                # the chunk, so do not enter the camera path here.
+                if not getattr(self, "_physics_only_worker", False):
+                    self.get_obs() # update obs
+                if (self.eval_video_path is not None) and not getattr(self, "_physics_only_worker", False):
                     self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
                 return
 
-        self._update_render()
+        if not defer_internal_render:
+            self._update_render()
         if self.render_freq:  # UI
             self.viewer.render()
 

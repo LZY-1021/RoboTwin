@@ -11,6 +11,10 @@ class place_object_scale(Base_Task):
 
     def setup_demo(self, **kwags):
         super()._init_task_env_(**kwags)
+        # FrozenCase evaluation skips the expert rollout, but check_success()
+        # still needs to know which gripper is responsible for this scene.
+        # Derive it from the deterministic object placement during setup.
+        self.arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
 
     def load_actors(self):
         rand_pos = rand_pose(

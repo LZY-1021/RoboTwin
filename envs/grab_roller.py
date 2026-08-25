@@ -4,6 +4,7 @@ import sapien
 import math
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
+import os
 
 
 class grab_roller(Base_Task):
@@ -13,7 +14,20 @@ class grab_roller(Base_Task):
 
     def load_actors(self):
         ori_qpos = [[0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5], [0, 0, 0.707, 0.707]]
-        self.model_id = np.random.choice([0, 2], 1)[0]
+        target_cell = os.environ.get(
+            "ROBOTWIN_GRAB_ROLLER_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.grab_roller_grid import (
+                grab_roller_cell_from_label,
+                target_grab_roller_pose,
+            )
+
+            target = grab_roller_cell_from_label(target_cell)
+            target_pose = target_grab_roller_pose(target)
+            self.model_id = target.model_id
+        else:
+            self.model_id = np.random.choice([0, 2], 1)[0]
         rand_pos = rand_pose(
             xlim=[-0.15, 0.15],
             ylim=[-0.25, -0.05],
@@ -21,6 +35,9 @@ class grab_roller(Base_Task):
             rotate_rand=True,
             rotate_lim=[0, 0.8, 0],
         )
+        if target_cell:
+            rand_pos.p[:2] = (target_pose.x, target_pose.y)
+            rand_pos.q = target_pose.quaternion
         self.roller = create_actor(
             scene=self,
             pose=rand_pos,

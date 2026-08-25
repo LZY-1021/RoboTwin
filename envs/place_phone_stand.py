@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 from copy import deepcopy
+import os
 
 
 class place_phone_stand(Base_Task):
@@ -25,7 +26,20 @@ class place_phone_stand(Base_Task):
             phone_x_lim = [0.05, 0.25]
             stand_x_lim = [0, 0.15]
 
-        self.phone_id = np.random.choice([0, 1, 2, 4], 1)[0]
+        target_cell = os.environ.get(
+            "ROBOTWIN_PLACE_PHONE_STAND_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.place_phone_stand_grid import (
+                place_phone_stand_cell_from_label,
+                target_place_phone_stand_scene,
+            )
+
+            target = place_phone_stand_cell_from_label(target_cell)
+            target_scene = target_place_phone_stand_scene(target)
+            self.phone_id = target.phone_id
+        else:
+            self.phone_id = np.random.choice([0, 1, 2, 4], 1)[0]
         phone_pose = rand_pose(
             xlim=phone_x_lim,
             ylim=[-0.2, 0.0],
@@ -33,6 +47,9 @@ class place_phone_stand(Base_Task):
             rotate_rand=True,
             rotate_lim=[0, 0.7, 0],
         )
+        if target_cell:
+            phone_pose.p[:2] = target_scene.phone_position
+            phone_pose.q = target_scene.phone_quaternion
         self.phone = create_actor(
             scene=self,
             pose=phone_pose,
@@ -48,7 +65,16 @@ class place_phone_stand(Base_Task):
             qpos=[0.707, 0.707, 0, 0],
             rotate_rand=False,
         )
-        while np.sqrt(np.sum((phone_pose.p[:2] - stand_pose.p[:2])**2)) < 0.15:
+        if target_cell:
+            stand_pose.p[:2] = target_scene.stand_position
+            stand_pose.q = target_scene.stand_quaternion
+        while (
+            not target_cell
+            and np.sqrt(
+                np.sum((phone_pose.p[:2] - stand_pose.p[:2]) ** 2)
+            )
+            < 0.15
+        ):
             stand_pose = rand_pose(
                 xlim=stand_x_lim,
                 ylim=[0, 0.2],
@@ -56,7 +82,10 @@ class place_phone_stand(Base_Task):
                 rotate_rand=False,
             )
 
-        self.stand_id = np.random.choice([1, 2], 1)[0]
+        if target_cell:
+            self.stand_id = target.stand_id
+        else:
+            self.stand_id = np.random.choice([1, 2], 1)[0]
         self.stand = create_actor(
             scene=self,
             pose=stand_pose,

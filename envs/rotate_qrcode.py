@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 from copy import deepcopy
+import os
 
 
 class rotate_qrcode(Base_Task):
@@ -26,7 +27,17 @@ class rotate_qrcode(Base_Task):
                 rotate_lim=[0, 0.7, 0],
             )
 
-        self.model_id = np.random.choice([0, 1, 2, 3], 1)[0]
+        target_cell = os.environ.get(
+            "ROBOTWIN_ROTATE_QRCODE_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.rotate_qrcode_grid import (
+                rotate_qrcode_cell_from_label,
+            )
+
+            self.model_id = rotate_qrcode_cell_from_label(target_cell).model_id
+        else:
+            self.model_id = np.random.choice([0, 1, 2, 3], 1)[0]
         self.qrcode = create_actor(
             self,
             pose=qrcode_pose,

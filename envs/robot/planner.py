@@ -8,9 +8,12 @@ import toppra as ta
 from mplib.sapien_utils import SapienPlanner, SapienPlanningWorld
 import transforms3d as t3d
 import envs._GLOBAL_CONFIGS as CONFIGS
+from robotwin_curobo_gate import should_skip_curobo_for_qpos
 
 
 try:
+    if should_skip_curobo_for_qpos():
+        raise ImportError("CuRobo disabled for frozen qpos evaluation")
     # ********************** CuroboPlanner (optional) **********************
     from curobo.types.math import Pose as CuroboPose
     import time
@@ -271,9 +274,16 @@ try:
             return result_p, result_q
     
 except Exception as e:
-    print('[planner.py]: Something wrong happened when importing CuroboPlanner! Please check if Curobo is installed correctly. If the problem still exists, you can install Curobo from https://github.com/NVlabs/curobo manually.')
-    print('Exception traceback:')
-    traceback.print_exc()
+    if should_skip_curobo_for_qpos():
+        class CuroboPlanner:
+            """Sentinel; frozen qpos uses interpolation planners instead."""
+
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("CuRobo is disabled for frozen qpos evaluation")
+    else:
+        print('[planner.py]: Something wrong happened when importing CuroboPlanner! Please check if Curobo is installed correctly. If the problem still exists, you can install Curobo from https://github.com/NVlabs/curobo manually.')
+        print('Exception traceback:')
+        traceback.print_exc()
 
 
 # ********************** MplibPlanner **********************

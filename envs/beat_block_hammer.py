@@ -20,7 +20,23 @@ class beat_block_hammer(Base_Task):
         )
         force_side = os.environ.get("ROBOTWIN_FORCE_SIDE", "").strip().lower()
         small_random = os.environ.get("ROBOTWIN_SMALL_RANDOM", "0") == "1"
-        if force_side == "left" and small_random:
+        fixed_position = os.environ.get("ROBOTWIN_FIXED_BLOCK_POSITION", "").strip()
+        if fixed_position:
+            try:
+                fixed_values = [float(value) for value in fixed_position.split(",")]
+            except ValueError as exc:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_BLOCK_POSITION must be x,y,z"
+                ) from exc
+            if len(fixed_values) != 3:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_BLOCK_POSITION must contain exactly 3 values"
+                )
+            block_pose = sapien.Pose(
+                fixed_values,
+                [1, 0, 0, 0],
+            )
+        elif force_side == "left" and small_random:
             block_xlim = [-0.18, -0.12]
             block_ylim = [0.02, 0.08]
             block_rotate_lim = [0, 0, 0.15]
@@ -28,15 +44,19 @@ class beat_block_hammer(Base_Task):
             block_xlim = [-0.25, -0.05] if force_side == "left" else [-0.25, 0.25]
             block_ylim = [-0.05, 0.15]
             block_rotate_lim = [0, 0, 0.5]
-        block_pose = rand_pose(
-            xlim=block_xlim,
-            ylim=block_ylim,
-            zlim=[0.76],
-            qpos=[1, 0, 0, 0],
-            rotate_rand=True,
-            rotate_lim=block_rotate_lim,
-        )
-        while abs(block_pose.p[0]) < 0.05 or np.sum(pow(block_pose.p[:2], 2)) < 0.001:
+        if not fixed_position:
+            block_pose = rand_pose(
+                xlim=block_xlim,
+                ylim=block_ylim,
+                zlim=[0.76],
+                qpos=[1, 0, 0, 0],
+                rotate_rand=True,
+                rotate_lim=block_rotate_lim,
+            )
+        while not fixed_position and (
+            abs(block_pose.p[0]) < 0.05
+            or np.sum(pow(block_pose.p[:2], 2)) < 0.001
+        ):
             block_pose = rand_pose(
                 xlim=block_xlim,
                 ylim=block_ylim,

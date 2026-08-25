@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 
 
 class open_laptop(Base_Task):
@@ -11,7 +12,17 @@ class open_laptop(Base_Task):
 
     def load_actors(self):
         self.model_name = "015_laptop"
-        self.model_id = np.random.randint(0, 11)
+        target_cell = os.environ.get(
+            "ROBOTWIN_OPEN_LAPTOP_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.open_laptop_grid import (
+                open_laptop_cell_from_label,
+            )
+
+            self.model_id = open_laptop_cell_from_label(target_cell).model_id
+        else:
+            self.model_id = np.random.randint(0, 11)
         self.laptop: ArticulationActor = rand_create_sapien_urdf_obj(
             scene=self,
             modelname=self.model_name,
@@ -29,10 +40,15 @@ class open_laptop(Base_Task):
         self.laptop.set_properties(1, 0)
         self.add_prohibit_area(self.laptop, padding=0.1)
 
-    def play_once(self):
+        # Frozen/resume evaluation skips the expert ``play_once()`` rollout,
+        # but ``check_success()`` is still called after every policy action.
+        # Initialize the active arm here so that those paths have the same
+        # state as a normal expert rollout.
         face_prod = get_face_prod(self.laptop.get_pose().q, [1, 0, 0], [1, 0, 0])
-        arm_tag = ArmTag("left" if face_prod > 0 else "right")
-        self.arm_tag = arm_tag
+        self.arm_tag = ArmTag("left" if face_prod > 0 else "right")
+
+    def play_once(self):
+        arm_tag = self.arm_tag
 
         # Grasp the laptop
         self.move(self.grasp_actor(self.laptop, arm_tag=arm_tag, pre_grasp_dis=0.08, contact_point_id=0))
