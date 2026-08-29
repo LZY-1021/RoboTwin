@@ -1,8 +1,100 @@
 from ._base_task import Base_Task
 from .utils import *
 import math
+import os
 import sapien
 from ._GLOBAL_CONFIGS import *
+
+
+def _fixed_xy(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    parts = raw.split(",")
+    if len(parts) != 2:
+        raise ValueError(f"{name} must be '<x>,<y>'")
+    try:
+        return [float(parts[0]), float(parts[1])]
+    except ValueError as exc:
+        raise ValueError(f"{name} must contain numeric x,y") from exc
+
+
+def _fixed_int(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _fixed_float(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+
+
+def _fixed_place_dual_shoes_config():
+    names = {
+        "shoe_id": "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_SHOE_MODEL_ID",
+        "box_id": "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_BOX_MODEL_ID",
+        "left_xy": "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_LEFT_SHOE_XY",
+        "right_xy": "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_RIGHT_SHOE_XY",
+    }
+    rotation_names = {
+        "left_rotation_y": (
+            "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_LEFT_SHOE_ROTATION_Y"
+        ),
+        "right_rotation_y": (
+            "ROBOTWIN_FIXED_PLACE_DUAL_SHOES_RIGHT_SHOE_ROTATION_Y"
+        ),
+    }
+    present = [
+        name
+        for name in (*names.values(), *rotation_names.values())
+        if os.environ.get(name) is not None
+    ]
+    if not present:
+        return None
+    missing = [name for name in names.values() if os.environ.get(name) is None]
+    if missing:
+        raise ValueError(f"fixed place_dual_shoes hook missing env vars: {missing}")
+    shoe_id = _fixed_int(names["shoe_id"])
+    box_id = _fixed_int(names["box_id"])
+    left_xy = _fixed_xy(names["left_xy"])
+    right_xy = _fixed_xy(names["right_xy"])
+    if shoe_id is None or not 0 <= shoe_id <= 9:
+        raise ValueError("fixed shoe model id must be in [0, 9]")
+    if box_id != 0:
+        raise ValueError("place_dual_shoes only supports shoe-box base0")
+    if left_xy[0] >= 0 or right_xy[0] <= 0:
+        raise ValueError("left/right shoe XY must be on their corresponding sides")
+    if min(left_xy[1], right_xy[1]) < -0.1 or max(left_xy[1], right_xy[1]) > 0.05:
+        raise ValueError("shoe Y positions are outside the native [-0.1, 0.05] range")
+    present_rotations = [
+        name for name in rotation_names.values() if os.environ.get(name) is not None
+    ]
+    if present_rotations and len(present_rotations) != len(rotation_names):
+        raise ValueError("fixed place_dual_shoes hook requires both shoe rotations")
+    left_rotation_y = _fixed_float(rotation_names["left_rotation_y"])
+    right_rotation_y = _fixed_float(rotation_names["right_rotation_y"])
+    if left_rotation_y is not None and not -math.pi <= left_rotation_y <= math.pi:
+        raise ValueError("fixed left shoe rotation must be in [-pi, pi]")
+    if right_rotation_y is not None and not -math.pi <= right_rotation_y <= math.pi:
+        raise ValueError("fixed right shoe rotation must be in [-pi, pi]")
+    return {
+        "shoe_id": shoe_id,
+        "box_id": box_id,
+        "left_xy": left_xy,
+        "right_xy": right_xy,
+        "left_rotation_y": left_rotation_y,
+        "right_rotation_y": right_rotation_y,
+    }
 
 
 class place_dual_shoes(Base_Task):
@@ -11,6 +103,60 @@ class place_dual_shoes(Base_Task):
         super()._init_task_env_(table_height_bias=-0.1, **kwags)
 
     def load_actors(self):
+        fixed = _fixed_place_dual_shoes_config()
+        if fixed is not None:
+            self.shoe_box = create_actor(
+                self,
+                pose=sapien.Pose([0, -0.13, 0.74], [0.5, 0.5, -0.5, -0.5]),
+                modelname="007_shoe-box",
+                convex=True,
+                is_static=True,
+                model_id=fixed["box_id"],
+            )
+            shoe_id = fixed["shoe_id"]
+            self.shoe_id = shoe_id
+            def fixed_shoe_pose(xy, rotation_y):
+                if rotation_y is not None:
+                    base_quaternion = [0.707, 0.707, 0, 0]
+                    rotation_quaternion = t3d.euler.euler2quat(
+                        0, rotation_y, 0
+                    )
+                    quaternion = t3d.quaternions.qmult(
+                        base_quaternion, rotation_quaternion
+                    )
+                    return sapien.Pose([xy[0], xy[1], 0.741], quaternion)
+                return rand_pose(
+                    xlim=[xy[0], xy[0]],
+                    ylim=[xy[1], xy[1]],
+                    zlim=[0.741],
+                    ylim_prop=True,
+                    rotate_rand=True,
+                    rotate_lim=[0, 3.14, 0],
+                    qpos=[0.707, 0.707, 0, 0],
+                )
+            self.left_shoe = create_actor(
+                self,
+                pose=fixed_shoe_pose(
+                    fixed["left_xy"], fixed["left_rotation_y"]
+                ),
+                modelname="041_shoe",
+                convex=True,
+                model_id=shoe_id,
+            )
+            self.right_shoe = create_actor(
+                self,
+                pose=fixed_shoe_pose(
+                    fixed["right_xy"], fixed["right_rotation_y"]
+                ),
+                modelname="041_shoe",
+                convex=True,
+                model_id=shoe_id,
+            )
+            self.add_prohibit_area(self.left_shoe, padding=0.02)
+            self.add_prohibit_area(self.right_shoe, padding=0.02)
+            self.prohibited_area.append([-0.15, -0.25, 0.15, 0.01])
+            self.right_shoe_middle_pose = [0.35, -0.05, 0.79, 0, 1, 0, 0]
+            return
         self.shoe_box = create_actor(
             self,
             pose=sapien.Pose([0, -0.13, 0.74], [0.5, 0.5, -0.5, -0.5]),
