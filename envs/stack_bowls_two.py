@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 
 
 class stack_bowls_two(Base_Task):
@@ -11,14 +12,86 @@ class stack_bowls_two(Base_Task):
 
     def load_actors(self):
         bowl_pose_lst = []
-        for i in range(2):
-            bowl_pose = rand_pose(
-                xlim=[-0.3, 0.3],
-                ylim=[-0.15, 0.15],
-                qpos=[0.5, 0.5, 0.5, 0.5],
-                ylim_prop=True,
-                rotate_rand=False,
+        fixed_names = (
+            "ROBOTWIN_FIXED_STACK_BOWLS_TWO_ARM_SEQUENCE",
+            "ROBOTWIN_FIXED_STACK_BOWLS_TWO_BOWL1_XY",
+            "ROBOTWIN_FIXED_STACK_BOWLS_TWO_BOWL2_XY",
+        )
+        fixed_values = [os.environ.get(name, "").strip() for name in fixed_names]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "stack_bowls_two fixed scene requires all adapter variables"
             )
+        fixed = all(fixed_values)
+        if fixed:
+            fixed_arm_sequence = fixed_values[0].split(",")
+            fixed_xy = [
+                [float(value) for value in raw_xy.split(",")]
+                for raw_xy in fixed_values[1:]
+            ]
+            if len(fixed_arm_sequence) != 2 or any(
+                arm not in {"left", "right"} for arm in fixed_arm_sequence
+            ):
+                raise ValueError(
+                    "stack_bowls_two fixed arm sequence must contain two arms"
+                )
+            for name, xy in zip(("bowl1", "bowl2"), fixed_xy):
+                if len(xy) != 2 or not np.isfinite(xy).all():
+                    raise ValueError(
+                        f"stack_bowls_two fixed {name} XY must contain two finite values"
+                    )
+                if not (-0.30 <= xy[0] <= 0.30 and -0.15 <= xy[1] <= 0.15):
+                    raise ValueError(
+                        f"stack_bowls_two fixed {name} pose is outside native domain"
+                    )
+                if abs(xy[0]) < 0.09:
+                    raise ValueError(
+                        f"stack_bowls_two fixed {name} violates center x exclusion"
+                    )
+                if np.linalg.norm(
+                    np.asarray(xy) - np.asarray([0.0, -0.1])
+                ) < 0.13:
+                    raise ValueError(
+                        f"stack_bowls_two fixed {name} violates target exclusion"
+                    )
+                if abs(xy[0]) < 0.15 and xy[1] > 0.0:
+                    raise ValueError(
+                        f"stack_bowls_two fixed {name} violates ylim_prop support"
+                    )
+            derived_sequence = [
+                "left" if xy[0] < 0 else "right" for xy in fixed_xy
+            ]
+            if fixed_arm_sequence != derived_sequence:
+                raise ValueError(
+                    "stack_bowls_two fixed arm sequence disagrees with bowl positions"
+                )
+            if not fixed_xy[0][1] < fixed_xy[1][1]:
+                raise ValueError(
+                    "stack_bowls_two fixed positions must be strictly y-sorted"
+                )
+            if np.linalg.norm(
+                np.asarray(fixed_xy[0]) - np.asarray(fixed_xy[1])
+            ) < 0.13:
+                raise ValueError(
+                    "stack_bowls_two fixed poses violate minimum distance"
+                )
+        for i in range(2):
+            if fixed:
+                bowl_pose = rand_pose(
+                    xlim=[fixed_xy[i][0], fixed_xy[i][0]],
+                    ylim=[fixed_xy[i][1], fixed_xy[i][1]],
+                    qpos=[0.5, 0.5, 0.5, 0.5],
+                    ylim_prop=False,
+                    rotate_rand=False,
+                )
+            else:
+                bowl_pose = rand_pose(
+                    xlim=[-0.3, 0.3],
+                    ylim=[-0.15, 0.15],
+                    qpos=[0.5, 0.5, 0.5, 0.5],
+                    ylim_prop=True,
+                    rotate_rand=False,
+                )
 
             def check_bowl_pose(bowl_pose):
                 for j in range(len(bowl_pose_lst)):
@@ -26,8 +99,11 @@ class stack_bowls_two(Base_Task):
                         return False
                 return True
 
-            while (abs(bowl_pose.p[0]) < 0.09 or np.sum(pow(bowl_pose.p[:2] - np.array([0, -0.1]), 2)) < 0.0169
-                   or not check_bowl_pose(bowl_pose)):
+            while (not fixed and (
+                abs(bowl_pose.p[0]) < 0.09
+                or np.sum(pow(bowl_pose.p[:2] - np.array([0, -0.1]), 2)) < 0.0169
+                or not check_bowl_pose(bowl_pose)
+            )):
                 bowl_pose = rand_pose(
                     xlim=[-0.3, 0.3],
                     ylim=[-0.15, 0.15],
