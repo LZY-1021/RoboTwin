@@ -1,7 +1,9 @@
 from ._base_task import Base_Task
 from .utils import *
+import os
 import sapien
 import math
+import transforms3d as t3d
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
 
@@ -28,7 +30,58 @@ class move_playingcard_away(Base_Task):
                 rotate_lim=[0, 3.14, 0],
             )
 
+        fixed_arm = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_ARM", ""
+        ).strip()
+        fixed_xy = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_XY", ""
+        ).strip()
+        if fixed_xy:
+            values = [float(value) for value in fixed_xy.split(",")]
+            if len(values) != 2:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_XY must be x,y"
+                )
+            x, y = values
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_ARM must be left/right"
+                )
+            x_bounds = (-0.10, -0.05) if fixed_arm == "left" else (0.05, 0.10)
+            if not (x_bounds[0] <= x <= x_bounds[1] and -0.20 <= y <= 0.05):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_XY is outside native domain"
+                )
+            rand_pos = sapien.Pose([x, y, float(rand_pos.p[2])], rand_pos.q)
+
+        fixed_rotation_y = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_ROTATION_Y", ""
+        ).strip()
+        if fixed_rotation_y:
+            rotation_y = float(fixed_rotation_y)
+            if not math.isfinite(rotation_y) or not (
+                -math.pi <= rotation_y <= math.pi
+            ):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_ROTATION_Y must be "
+                    "finite in [-pi,pi]"
+                )
+            fixed_q = t3d.quaternions.qmult(
+                [0.5, 0.5, 0.5, 0.5],
+                t3d.euler.euler2quat(0.0, rotation_y, 0.0),
+            )
+            rand_pos = sapien.Pose(rand_pos.p, fixed_q)
+
         self.playingcards_id = np.random.choice([0, 1, 2], 1)[0]
+        fixed_model_id = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_MODEL_ID", ""
+        ).strip()
+        if fixed_model_id:
+            self.playingcards_id = int(fixed_model_id)
+            if self.playingcards_id not in (0, 1, 2):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_PLAYINGCARD_AWAY_MODEL_ID must be 0, 1, or 2"
+                )
         self.playingcards = create_actor(
             scene=self,
             pose=rand_pos,

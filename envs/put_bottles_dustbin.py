@@ -1,5 +1,6 @@
 from ._base_task import Base_Task
 from .utils import *
+import os
 import sapien
 from copy import deepcopy
 
@@ -11,16 +12,59 @@ class put_bottles_dustbin(Base_Task):
 
     def load_actors(self):
         pose_lst = []
+        fixed_keys = (
+            "ROBOTWIN_FIXED_PUT_BOTTLES_DUSTBIN_BOTTLE1_XY",
+            "ROBOTWIN_FIXED_PUT_BOTTLES_DUSTBIN_BOTTLE2_XY",
+            "ROBOTWIN_FIXED_PUT_BOTTLES_DUSTBIN_BOTTLE3_XY",
+        )
+        fixed_values = [os.environ.get(key, "").strip() for key in fixed_keys]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "put_bottles_dustbin canonical fixed scene must be all-or-none"
+            )
+        fixed_bottle_xy = None
+        if all(fixed_values):
+            try:
+                fixed_bottle_xy = [
+                    tuple(float(value) for value in raw.split(","))
+                    for raw in fixed_values
+                ]
+            except ValueError as exc:
+                raise ValueError(
+                    "put_bottles_dustbin fixed XY values must be numeric"
+                ) from exc
+            if any(len(xy) != 2 or not np.all(np.isfinite(xy)) for xy in fixed_bottle_xy):
+                raise ValueError(
+                    "put_bottles_dustbin fixed XY must contain 2 finite values"
+                )
+            approved_points = {
+                (-0.07, 0.04), (-0.16, 0.15), (-0.25, 0.03),
+                (0.07, 0.04), (0.18, 0.15), (0.30, 0.03),
+            }
+            if any(xy not in approved_points for xy in fixed_bottle_xy):
+                raise ValueError(
+                    "put_bottles_dustbin fixed XY is not an approved anchor"
+                )
+            if any(
+                np.linalg.norm(
+                    np.array(fixed_bottle_xy[i]) - np.array(fixed_bottle_xy[j])
+                ) < 0.13 - 1e-9
+                for i in range(3) for j in range(i + 1, 3)
+            ):
+                raise ValueError(
+                    "put_bottles_dustbin fixed XY pairwise distance is below 0.13"
+                )
 
         def create_bottle(model_id):
+            fixed_xy = None if fixed_bottle_xy is None else fixed_bottle_xy[model_id - 1]
             bottle_pose = rand_pose(
-                xlim=[-0.25, 0.3],
-                ylim=[0.03, 0.23],
+                xlim=[-0.25, 0.3] if fixed_xy is None else [fixed_xy[0], fixed_xy[0]],
+                ylim=[0.03, 0.23] if fixed_xy is None else [fixed_xy[1], fixed_xy[1]],
                 rotate_rand=False,
                 rotate_lim=[0, 1, 0],
                 qpos=[0.707, 0.707, 0, 0],
             )
-            tag = True
+            tag = fixed_xy is None
             gen_lim = 100
             i = 1
             while tag and i < gen_lim:

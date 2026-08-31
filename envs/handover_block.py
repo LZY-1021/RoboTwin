@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 from ._GLOBAL_CONFIGS import *
 
 
@@ -11,9 +12,52 @@ class handover_block(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        fixed_keys = [
+            "ROBOTWIN_FIXED_HANDOVER_BLOCK_BLOCK_XY",
+            "ROBOTWIN_FIXED_HANDOVER_BLOCK_PAD_XY",
+        ]
+        fixed_values = [os.environ.get(key) for key in fixed_keys]
+        if any(value is not None for value in fixed_values) and not all(
+            value is not None for value in fixed_values
+        ):
+            raise ValueError("handover_block fixed-scene env must be all-or-none")
+        fixed_scene = all(value is not None for value in fixed_values)
+
+        def parse_xy(raw, label):
+            parts = raw.split(",")
+            if len(parts) != 2:
+                raise ValueError(f"handover_block fixed {label} must be x,y")
+            xy = np.asarray([float(parts[0]), float(parts[1])], dtype=float)
+            if not np.all(np.isfinite(xy)):
+                raise ValueError(f"handover_block fixed {label} must be finite")
+            return xy
+
+        if fixed_scene:
+            fixed_block_xy = parse_xy(fixed_values[0], "block xy")
+            fixed_pad_xy = parse_xy(fixed_values[1], "pad xy")
+            if not (
+                -0.25 <= fixed_block_xy[0] <= -0.05
+                and 0.0 <= fixed_block_xy[1] <= 0.25
+            ):
+                raise ValueError("handover_block fixed block xy is outside native domain")
+            if not (
+                0.10 <= fixed_pad_xy[0] <= 0.25
+                and 0.15 <= fixed_pad_xy[1] <= 0.20
+            ):
+                raise ValueError("handover_block fixed pad xy is outside native domain")
+            block_xlim = [fixed_block_xy[0], fixed_block_xy[0]]
+            block_ylim = [fixed_block_xy[1], fixed_block_xy[1]]
+            pad_xlim = [fixed_pad_xy[0], fixed_pad_xy[0]]
+            pad_ylim = [fixed_pad_xy[1], fixed_pad_xy[1]]
+        else:
+            block_xlim = [-0.25, -0.05]
+            block_ylim = [0, 0.25]
+            pad_xlim = [0.1, 0.25]
+            pad_ylim = [0.15, 0.2]
+
         rand_pos = rand_pose(
-            xlim=[-0.25, -0.05],
-            ylim=[0, 0.25],
+            xlim=block_xlim,
+            ylim=block_ylim,
             zlim=[0.842],
             qpos=[0.981, 0, 0, 0.195],
             rotate_rand=True,
@@ -29,8 +73,8 @@ class handover_block(Base_Task):
         )
 
         rand_pos = rand_pose(
-            xlim=[0.1, 0.25],
-            ylim=[0.15, 0.2],
+            xlim=pad_xlim,
+            ylim=pad_ylim,
         )
 
         self.target_box = create_box(
@@ -106,6 +150,11 @@ class handover_block(Base_Task):
             ),
         )
 
+        self.info["info"] = {
+            "{A}": "red_block/fixed",
+            "{B}": "blue_pad/fixed",
+            "{a}": "left",
+        }
         return self.info
 
     def check_success(self):

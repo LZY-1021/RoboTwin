@@ -2,6 +2,8 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
+import transforms3d as t3d
 
 
 class lift_pot(Base_Task):
@@ -11,16 +13,49 @@ class lift_pot(Base_Task):
 
     def load_actors(self):
         self.model_name = "060_kitchenpot"
+        fixed_model = os.environ.get("ROBOTWIN_FIXED_LIFT_POT_MODEL_ID", "").strip()
+        fixed_xy = os.environ.get("ROBOTWIN_FIXED_LIFT_POT_XY", "").strip()
+        fixed_rotation = os.environ.get(
+            "ROBOTWIN_FIXED_LIFT_POT_ROTATION_Z", ""
+        ).strip()
+        fixed_values = (fixed_model, fixed_xy, fixed_rotation)
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "lift_pot fixed cache scene requires model, XY, and rotation"
+            )
+
         self.model_id = np.random.randint(0, 2)
+        xlim = [-0.05, 0.05]
+        ylim = [-0.05, 0.05]
+        rotate_rand = True
+        qpos = [0.704141, 0, 0, 0.71006]
+        if fixed_model:
+            self.model_id = int(fixed_model)
+            if self.model_id != 0:
+                raise ValueError("lift_pot limited cache policy requires model id 0")
+            xy = tuple(float(value) for value in fixed_xy.split(","))
+            if len(xy) != 2:
+                raise ValueError("ROBOTWIN_FIXED_LIFT_POT_XY must be x,y")
+            if not (-0.05 <= xy[0] <= 0.05 and -0.05 <= xy[1] <= 0.05):
+                raise ValueError("fixed lift_pot XY is outside the native domain")
+            rotation_z = float(fixed_rotation)
+            if not -np.pi / 8 <= rotation_z <= np.pi / 8:
+                raise ValueError("fixed lift_pot rotation is outside the native domain")
+            xlim = [xy[0], xy[0]]
+            ylim = [xy[1], xy[1]]
+            rotate_rand = False
+            qpos = t3d.quaternions.qmult(
+                qpos, t3d.euler.euler2quat(0.0, 0.0, rotation_z)
+            )
         self.pot = rand_create_sapien_urdf_obj(
             scene=self,
             modelname=self.model_name,
             modelid=self.model_id,
-            xlim=[-0.05, 0.05],
-            ylim=[-0.05, 0.05],
-            rotate_rand=True,
+            xlim=xlim,
+            ylim=ylim,
+            rotate_rand=rotate_rand,
             rotate_lim=[0, 0, np.pi / 8],
-            qpos=[0.704141, 0, 0, 0.71006],
+            qpos=qpos,
         )
         x, y = self.pot.get_pose().p[0], self.pot.get_pose().p[1]
         self.prohibited_area.append([x - 0.3, y - 0.1, x + 0.3, y + 0.1])

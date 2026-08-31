@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 
 
 class place_can_basket(Base_Task):
@@ -10,24 +11,66 @@ class place_can_basket(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
-        self.arm_tag = ArmTag({0: "left", 1: "right"}[np.random.randint(0, 2)])
-
+        fixed_names = (
+            "ROBOTWIN_FIXED_PLACE_CAN_BASKET_ARM",
+            "ROBOTWIN_FIXED_PLACE_CAN_BASKET_CAN_ID",
+            "ROBOTWIN_FIXED_PLACE_CAN_BASKET_BASKET_ID",
+            "ROBOTWIN_FIXED_PLACE_CAN_BASKET_CAN_XY",
+            "ROBOTWIN_FIXED_PLACE_CAN_BASKET_BASKET_XY",
+        )
+        fixed_values = [os.environ.get(name, "").strip() for name in fixed_names]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "place_can_basket fixed scene requires all adapter variables"
+            )
+        fixed = all(fixed_values)
         self.basket_name = "110_basket"
-        self.basket_id = [0, 1][np.random.randint(0, 2)]
-
         can_dict = {
             "071_can": [0, 1, 2, 3, 5, 6],
         }
         self.can_name = "071_can"
-        self.can_id = can_dict[self.can_name][np.random.randint(0, len(can_dict[self.can_name]))]
+        if fixed:
+            fixed_arm = fixed_values[0]
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError("place_can_basket fixed arm must be left/right")
+            self.arm_tag = ArmTag(fixed_arm)
+            self.can_id = int(fixed_values[1])
+            self.basket_id = int(fixed_values[2])
+            can_xy = [float(value) for value in fixed_values[3].split(",")]
+            basket_xy = [float(value) for value in fixed_values[4].split(",")]
+            if self.can_id not in {0, 1, 2, 6}:
+                raise ValueError("place_can_basket fixed can id is not approved")
+            if self.basket_id not in {0, 1}:
+                raise ValueError("place_can_basket fixed basket id is not approved")
+            for role, xy in (("can", can_xy), ("basket", basket_xy)):
+                if len(xy) != 2 or not np.isfinite(xy).all():
+                    raise ValueError(f"place_can_basket fixed {role} XY is invalid")
+            can_x_bounds = (-0.25, -0.20) if fixed_arm == "left" else (0.20, 0.25)
+            expected_basket_x = 0.02 if fixed_arm == "left" else -0.02
+            if not (
+                can_x_bounds[0] <= can_xy[0] <= can_x_bounds[1]
+                and 0.0 <= can_xy[1] <= 0.10
+            ):
+                raise ValueError("place_can_basket fixed can pose is invalid")
+            if not (
+                abs(basket_xy[0] - expected_basket_x) <= 1e-9
+                and -0.08 <= basket_xy[1] <= -0.05
+            ):
+                raise ValueError("place_can_basket fixed basket pose is invalid")
+        else:
+            self.arm_tag = ArmTag({0: "left", 1: "right"}[np.random.randint(0, 2)])
+            self.basket_id = [0, 1][np.random.randint(0, 2)]
+            self.can_id = can_dict[self.can_name][
+                np.random.randint(0, len(can_dict[self.can_name]))
+            ]
 
         if self.arm_tag == "left":  # can on left
             self.basket = rand_create_actor(
                 scene=self,
                 modelname=self.basket_name,
                 model_id=self.basket_id,
-                xlim=[0.02, 0.02],
-                ylim=[-0.08, -0.05],
+                xlim=[basket_xy[0], basket_xy[0]] if fixed else [0.02, 0.02],
+                ylim=[basket_xy[1], basket_xy[1]] if fixed else [-0.08, -0.05],
                 qpos=[0.5, 0.5, 0.5, 0.5],
                 convex=True,
             )
@@ -35,8 +78,8 @@ class place_can_basket(Base_Task):
                 scene=self,
                 modelname=self.can_name,
                 model_id=self.can_id,
-                xlim=[-0.25, -0.2],
-                ylim=[0.0, 0.1],
+                xlim=[can_xy[0], can_xy[0]] if fixed else [-0.25, -0.2],
+                ylim=[can_xy[1], can_xy[1]] if fixed else [0.0, 0.1],
                 qpos=[0.707225, 0.706849, -0.0100455, -0.00982061],
                 convex=True,
             )
@@ -45,8 +88,8 @@ class place_can_basket(Base_Task):
                 scene=self,
                 modelname=self.basket_name,
                 model_id=self.basket_id,
-                xlim=[-0.02, -0.02],
-                ylim=[-0.08, -0.05],
+                xlim=[basket_xy[0], basket_xy[0]] if fixed else [-0.02, -0.02],
+                ylim=[basket_xy[1], basket_xy[1]] if fixed else [-0.08, -0.05],
                 qpos=[0.5, 0.5, 0.5, 0.5],
                 convex=True,
             )
@@ -54,8 +97,8 @@ class place_can_basket(Base_Task):
                 scene=self,
                 modelname=self.can_name,
                 model_id=self.can_id,
-                xlim=[0.2, 0.25],
-                ylim=[0.0, 0.1],
+                xlim=[can_xy[0], can_xy[0]] if fixed else [0.2, 0.25],
+                ylim=[can_xy[1], can_xy[1]] if fixed else [0.0, 0.1],
                 qpos=[0.707225, 0.706849, -0.0100455, -0.00982061],
                 convex=True,
             )

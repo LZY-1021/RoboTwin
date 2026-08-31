@@ -1,8 +1,10 @@
 from ._base_task import Base_Task
 from .utils import *
+import os
 import sapien
 import math
 import numpy as np
+import transforms3d as t3d
 
 
 class blocks_ranking_size(Base_Task):
@@ -11,13 +13,92 @@ class blocks_ranking_size(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        canonical_keys = (
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_ARM_SEQUENCE",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_LARGE_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_MEDIUM_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_SMALL_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_LARGE_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_MEDIUM_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_SMALL_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_SIZE_TARGET_Y",
+        )
+        canonical_values = [
+            os.environ.get(key, "").strip() for key in canonical_keys
+        ]
+        if any(canonical_values) and not all(canonical_values):
+            raise ValueError(
+                "blocks_ranking_size canonical fixed scene must be all-or-none"
+            )
+        canonical_fixed = all(canonical_values)
+        if canonical_fixed:
+            arm_sequence = canonical_values[0].split(",")
+            if len(arm_sequence) != 3 or any(
+                arm not in {"left", "right"} for arm in arm_sequence
+            ):
+                raise ValueError(
+                    "blocks_ranking_size fixed arm sequence must contain three left/right values"
+                )
+            try:
+                fixed_xy = [
+                    [float(value) for value in raw.split(",")]
+                    for raw in canonical_values[1:4]
+                ]
+                fixed_rotation = [float(value) for value in canonical_values[4:7]]
+                fixed_target_y = float(canonical_values[7])
+            except ValueError as exc:
+                raise ValueError(
+                    "blocks_ranking_size fixed scene values must be numeric"
+                ) from exc
+            if any(len(xy) != 2 or not np.all(np.isfinite(xy)) for xy in fixed_xy):
+                raise ValueError(
+                    "blocks_ranking_size fixed XY values must contain two finite values"
+                )
+            derived_sequence = ["left" if xy[0] < 0 else "right" for xy in fixed_xy]
+            if arm_sequence != derived_sequence:
+                raise ValueError(
+                    "blocks_ranking_size fixed arm sequence disagrees with block positions"
+                )
+            anchors = {(0.07, 0.0), (0.18, 0.04), (0.27, -0.06)}
+            observed_anchors = {
+                (round(abs(xy[0]), 9), round(xy[1], 9)) for xy in fixed_xy
+            }
+            if observed_anchors != anchors:
+                raise ValueError(
+                    "blocks_ranking_size fixed poses must use approved anchors"
+                )
+            valid_rotations = (
+                (-0.375, 0.375, -0.375),
+                (0.375, -0.375, 0.375),
+            )
+            if not any(
+                np.allclose(fixed_rotation, candidate, rtol=0.0, atol=1e-9)
+                for candidate in valid_rotations
+            ):
+                raise ValueError(
+                    "blocks_ranking_size fixed rotation variant is not approved"
+                )
+            if not np.isfinite(fixed_target_y) or abs(fixed_target_y + 0.15) > 1e-9:
+                raise ValueError(
+                    "blocks_ranking_size fixed target Y must be -0.15"
+                )
         color_lst = [(np.random.random(), np.random.random(), np.random.random()) for i in range(3)]
         halfsize_lst = [
             np.random.uniform(0.03, 0.033),
             np.random.uniform(0.024, 0.027),
             np.random.uniform(0.018, 0.021),
         ]
-        while True:
+        if canonical_fixed:
+            block_pose_lst = [
+                sapien.Pose(
+                    [xy[0], xy[1], 0.741 + half_size],
+                    t3d.euler.euler2quat(0.0, 0.0, rotation_z),
+                )
+                for xy, half_size, rotation_z in zip(
+                    fixed_xy, halfsize_lst, fixed_rotation, strict=True
+                )
+            ]
+        while not canonical_fixed:
             block_pose_lst = []
             for i in range(3):
                 block_pose = rand_pose(
@@ -79,7 +160,7 @@ class blocks_ranking_size(Base_Task):
         self.prohibited_area.append([-0.27, -0.22, 0.27, -0.12])
 
         # Generate random y position for all blocks
-        y_pose = np.random.uniform(-0.2, -0.1)
+        y_pose = fixed_target_y if canonical_fixed else np.random.uniform(-0.2, -0.1)
 
         # Define target poses for each block with random x positions
         self.block1_target_pose = [

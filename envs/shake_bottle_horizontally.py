@@ -2,6 +2,8 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
+import transforms3d as t3d
 
 
 class shake_bottle_horizontally(Base_Task):
@@ -11,15 +13,68 @@ class shake_bottle_horizontally(Base_Task):
 
     def load_actors(self):
         self.id_list = [i for i in range(20)]
-        rand_pos = rand_pose(
-            xlim=[-0.15, 0.15],
-            ylim=[-0.15, -0.05],
-            zlim=[0.785],
-            qpos=[0, 0, 1, 0],
-            rotate_rand=True,
-            rotate_lim=[0, 0, np.pi / 4],
+        fixed_keys = (
+            "ROBOTWIN_FIXED_SHAKE_BOTTLE_HORIZONTALLY_ARM",
+            "ROBOTWIN_FIXED_SHAKE_BOTTLE_HORIZONTALLY_MODEL_ID",
+            "ROBOTWIN_FIXED_SHAKE_BOTTLE_HORIZONTALLY_XY",
+            "ROBOTWIN_FIXED_SHAKE_BOTTLE_HORIZONTALLY_ROTATION_Z",
         )
-        while abs(rand_pos.p[0]) < 0.1:
+        fixed_values = [os.environ.get(key) for key in fixed_keys]
+        if any(value is not None for value in fixed_values) and not all(
+            value is not None for value in fixed_values
+        ):
+            raise ValueError(
+                "shake_bottle_horizontally fixed scene requires all fields"
+            )
+
+        if all(value is not None for value in fixed_values):
+            fixed_arm = str(fixed_values[0])
+            fixed_model_id = int(str(fixed_values[1]))
+            xy_parts = str(fixed_values[2]).split(",")
+            if len(xy_parts) != 2:
+                raise ValueError(
+                    "shake_bottle_horizontally fixed XY must contain x,y"
+                )
+            fixed_xy = tuple(float(value) for value in xy_parts)
+            fixed_rotation_z = float(str(fixed_values[3]))
+            valid_x = {
+                "left": (-0.1375, -0.1125),
+                "right": (0.1375, 0.1125),
+            }
+            if fixed_arm not in valid_x:
+                raise ValueError(
+                    "shake_bottle_horizontally fixed arm must be left/right"
+                )
+            if fixed_model_id not in {2, 4, 5, 6, 11, 13, 16, 18}:
+                raise ValueError(
+                    "shake_bottle_horizontally fixed model id is not approved"
+                )
+            if not any(
+                abs(fixed_xy[0] - value) <= 1e-9
+                for value in valid_x[fixed_arm]
+            ) or abs(fixed_xy[1] + 0.1) > 1e-9:
+                raise ValueError(
+                    "shake_bottle_horizontally fixed XY is not approved"
+                )
+            if not any(
+                abs(fixed_rotation_z - value) <= 1e-9
+                for value in (-np.pi / 8, np.pi / 8)
+            ):
+                raise ValueError(
+                    "shake_bottle_horizontally fixed rotation is not approved"
+                )
+            rand_pos = rand_pose(
+                xlim=[fixed_xy[0], fixed_xy[0]],
+                ylim=[fixed_xy[1], fixed_xy[1]],
+                zlim=[0.785],
+                qpos=[0, 0, 1, 0],
+                rotate_rand=False,
+            )
+            base_q = np.asarray([0, 0, 1, 0], dtype=float)
+            rotation_q = t3d.euler.euler2quat(0, 0, fixed_rotation_z)
+            rand_pos.q = t3d.quaternions.qmult(base_q, rotation_q)
+            self.bottle_id = fixed_model_id
+        else:
             rand_pos = rand_pose(
                 xlim=[-0.15, 0.15],
                 ylim=[-0.15, -0.05],
@@ -28,7 +83,16 @@ class shake_bottle_horizontally(Base_Task):
                 rotate_rand=True,
                 rotate_lim=[0, 0, np.pi / 4],
             )
-        self.bottle_id = np.random.choice(self.id_list)
+            while abs(rand_pos.p[0]) < 0.1:
+                rand_pos = rand_pose(
+                    xlim=[-0.15, 0.15],
+                    ylim=[-0.15, -0.05],
+                    zlim=[0.785],
+                    qpos=[0, 0, 1, 0],
+                    rotate_rand=True,
+                    rotate_lim=[0, 0, np.pi / 4],
+                )
+            self.bottle_id = np.random.choice(self.id_list)
         self.bottle = create_actor(
             scene=self,
             pose=rand_pos,

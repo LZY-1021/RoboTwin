@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import os
 import sapien
+import transforms3d as t3d
 from ._GLOBAL_CONFIGS import *
 
 
@@ -18,9 +19,89 @@ class beat_block_hammer(Base_Task):
             convex=True,
             model_id=0,
         )
+        canonical_keys = (
+            "ROBOTWIN_FIXED_BEAT_BLOCK_HAMMER_ARM",
+            "ROBOTWIN_FIXED_BEAT_BLOCK_HAMMER_BLOCK_XYZ",
+            "ROBOTWIN_FIXED_BEAT_BLOCK_HAMMER_BLOCK_ROTATION_Z",
+        )
+        canonical_values = [
+            os.environ.get(key, "").strip() for key in canonical_keys
+        ]
+        if any(canonical_values) and not all(canonical_values):
+            raise ValueError(
+                "beat_block_hammer canonical fixed scene must be all-or-none"
+            )
+        canonical_fixed = all(canonical_values)
         force_side = os.environ.get("ROBOTWIN_FORCE_SIDE", "").strip().lower()
         small_random = os.environ.get("ROBOTWIN_SMALL_RANDOM", "0") == "1"
-        if force_side == "left" and small_random:
+        legacy_fixed_position = os.environ.get(
+            "ROBOTWIN_FIXED_BLOCK_POSITION", ""
+        ).strip()
+        if canonical_fixed and legacy_fixed_position:
+            raise ValueError(
+                "beat_block_hammer canonical and legacy fixed scenes are exclusive"
+            )
+        fixed_position = canonical_fixed or bool(legacy_fixed_position)
+        if canonical_fixed:
+            fixed_arm = canonical_values[0]
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError("beat_block_hammer fixed arm must be left/right")
+            try:
+                fixed_values = [
+                    float(value) for value in canonical_values[1].split(",")
+                ]
+                fixed_rotation_z = float(canonical_values[2])
+            except ValueError as exc:
+                raise ValueError(
+                    "beat_block_hammer fixed block pose must be numeric"
+                ) from exc
+            if len(fixed_values) != 3 or not np.all(np.isfinite(fixed_values)):
+                raise ValueError(
+                    "beat_block_hammer fixed block XYZ must contain 3 finite values"
+                )
+            valid_x = {
+                "left": (-0.225, -0.175, -0.125, -0.075),
+                "right": (0.225, 0.175, 0.125, 0.075),
+            }[fixed_arm]
+            if not any(
+                abs(fixed_values[0] - value) <= 1e-9 for value in valid_x
+            ):
+                raise ValueError("beat_block_hammer fixed block X is not approved")
+            if not any(
+                abs(fixed_values[1] - value) <= 1e-9 for value in (0.0, 0.1)
+            ):
+                raise ValueError("beat_block_hammer fixed block Y is not approved")
+            if abs(fixed_values[2] - 0.76) > 1e-9:
+                raise ValueError("beat_block_hammer fixed block Z is not approved")
+            if not np.isfinite(fixed_rotation_z) or not any(
+                abs(fixed_rotation_z - value) <= 1e-9
+                for value in (-0.375, -0.125, 0.125, 0.375)
+            ):
+                raise ValueError(
+                    "beat_block_hammer fixed block rotation is not approved"
+                )
+            block_pose = sapien.Pose(
+                fixed_values,
+                t3d.euler.euler2quat(0.0, 0.0, fixed_rotation_z),
+            )
+        elif legacy_fixed_position:
+            try:
+                fixed_values = [
+                    float(value) for value in legacy_fixed_position.split(",")
+                ]
+            except ValueError as exc:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_BLOCK_POSITION must be x,y,z"
+                ) from exc
+            if len(fixed_values) != 3:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_BLOCK_POSITION must contain exactly 3 values"
+                )
+            block_pose = sapien.Pose(
+                fixed_values,
+                [1, 0, 0, 0],
+            )
+        elif force_side == "left" and small_random:
             block_xlim = [-0.18, -0.12]
             block_ylim = [0.02, 0.08]
             block_rotate_lim = [0, 0, 0.15]
@@ -28,15 +109,19 @@ class beat_block_hammer(Base_Task):
             block_xlim = [-0.25, -0.05] if force_side == "left" else [-0.25, 0.25]
             block_ylim = [-0.05, 0.15]
             block_rotate_lim = [0, 0, 0.5]
-        block_pose = rand_pose(
-            xlim=block_xlim,
-            ylim=block_ylim,
-            zlim=[0.76],
-            qpos=[1, 0, 0, 0],
-            rotate_rand=True,
-            rotate_lim=block_rotate_lim,
-        )
-        while abs(block_pose.p[0]) < 0.05 or np.sum(pow(block_pose.p[:2], 2)) < 0.001:
+        if not fixed_position:
+            block_pose = rand_pose(
+                xlim=block_xlim,
+                ylim=block_ylim,
+                zlim=[0.76],
+                qpos=[1, 0, 0, 0],
+                rotate_rand=True,
+                rotate_lim=block_rotate_lim,
+            )
+        while not fixed_position and (
+            abs(block_pose.p[0]) < 0.05
+            or np.sum(pow(block_pose.p[:2], 2)) < 0.001
+        ):
             block_pose = rand_pose(
                 xlim=block_xlim,
                 ylim=block_ylim,

@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import glob
+import os
 
 
 class place_bread_skillet(Base_Task):
@@ -10,16 +11,61 @@ class place_bread_skillet(Base_Task):
         super()._init_task_env_(**kwags, table_static=False)
 
     def load_actors(self):
-        id_list = [0, 1, 3, 5, 6]
-        self.bread_id = np.random.choice(id_list)
+        fixed_names = (
+            "ROBOTWIN_FIXED_PLACE_BREAD_SKILLET_ARM",
+            "ROBOTWIN_FIXED_PLACE_BREAD_SKILLET_SKILLET_ID",
+            "ROBOTWIN_FIXED_PLACE_BREAD_SKILLET_BREAD_ID",
+            "ROBOTWIN_FIXED_PLACE_BREAD_SKILLET_SKILLET_XY",
+            "ROBOTWIN_FIXED_PLACE_BREAD_SKILLET_BREAD_XY",
+        )
+        fixed_values = [os.environ.get(name, "").strip() for name in fixed_names]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "place_bread_skillet fixed scene requires all adapter variables"
+            )
+        fixed = all(fixed_values)
+        if fixed:
+            arm = fixed_values[0]
+            self.skillet_id = int(fixed_values[1])
+            self.bread_id = int(fixed_values[2])
+            skillet_xy = [float(value) for value in fixed_values[3].split(",")]
+            bread_xy = [float(value) for value in fixed_values[4].split(",")]
+            if arm not in {"left", "right"}:
+                raise ValueError("place_bread_skillet fixed arm must be left/right")
+            if self.skillet_id not in {0, 1}:
+                raise ValueError("place_bread_skillet fixed skillet id is not approved")
+            if self.bread_id not in {1, 3, 5, 6}:
+                raise ValueError("place_bread_skillet fixed bread id is not approved")
+            if len(skillet_xy) != 2 or not np.isfinite(skillet_xy).all():
+                raise ValueError("place_bread_skillet fixed skillet XY is invalid")
+            if len(bread_xy) != 2 or not np.isfinite(bread_xy).all():
+                raise ValueError("place_bread_skillet fixed bread XY is invalid")
+            skillet_x_bounds = (
+                (-0.25, -0.15) if arm == "left" else (0.15, 0.25)
+            )
+            bread_x_bounds = (
+                (0.20, 0.28) if arm == "left" else (-0.28, -0.20)
+            )
+            if not (
+                skillet_x_bounds[0] <= skillet_xy[0] <= skillet_x_bounds[1]
+                and -0.20 <= skillet_xy[1] <= 0.05
+            ):
+                raise ValueError("place_bread_skillet fixed skillet pose is invalid")
+            if not (
+                bread_x_bounds[0] <= bread_xy[0] <= bread_x_bounds[1]
+                and -0.20 <= bread_xy[1] <= 0.05
+            ):
+                raise ValueError("place_bread_skillet fixed bread pose is invalid")
+        else:
+            self.bread_id = np.random.choice([0, 1, 3, 5, 6])
         rand_pos = rand_pose(
-            xlim=[-0.28, 0.28],
-            ylim=[-0.2, 0.05],
+            xlim=[bread_xy[0], bread_xy[0]] if fixed else [-0.28, 0.28],
+            ylim=[bread_xy[1], bread_xy[1]] if fixed else [-0.2, 0.05],
             qpos=[0.707, 0.707, 0.0, 0.0],
             rotate_rand=True,
             rotate_lim=[0, np.pi / 4, 0],
         )
-        while abs(rand_pos.p[0]) < 0.2:
+        while not fixed and abs(rand_pos.p[0]) < 0.2:
             rand_pos = rand_pose(
                 xlim=[-0.28, 0.28],
                 ylim=[-0.2, 0.05],
@@ -35,12 +81,17 @@ class place_bread_skillet(Base_Task):
             convex=True,
         )
 
-        xlim = [0.15, 0.25] if rand_pos.p[0] < 0 else [-0.25, -0.15]
+        xlim = (
+            [skillet_xy[0], skillet_xy[0]]
+            if fixed
+            else ([0.15, 0.25] if rand_pos.p[0] < 0 else [-0.25, -0.15])
+        )
         self.model_id_list = [0, 1, 2, 3]
-        self.skillet_id = np.random.choice(self.model_id_list)
+        if not fixed:
+            self.skillet_id = np.random.choice(self.model_id_list)
         rand_pos = rand_pose(
             xlim=xlim,
-            ylim=[-0.2, 0.05],
+            ylim=[skillet_xy[1], skillet_xy[1]] if fixed else [-0.2, 0.05],
             qpos=[0, 0, 0.707, 0.707],
             rotate_rand=True,
             rotate_lim=[0, np.pi / 6, 0],

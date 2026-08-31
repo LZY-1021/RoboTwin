@@ -4,6 +4,7 @@ import sapien
 import math
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
+import os
 
 
 class grab_roller(Base_Task):
@@ -13,7 +14,42 @@ class grab_roller(Base_Task):
 
     def load_actors(self):
         ori_qpos = [[0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5], [0, 0, 0.707, 0.707]]
-        self.model_id = np.random.choice([0, 2], 1)[0]
+        target_cell = os.environ.get(
+            "ROBOTWIN_GRAB_ROLLER_TARGET_CELL", ""
+        ).strip()
+        fixed_model = os.environ.get(
+            "ROBOTWIN_FIXED_GRAB_ROLLER_MODEL_ID", ""
+        ).strip()
+        fixed_xy = os.environ.get("ROBOTWIN_FIXED_GRAB_ROLLER_XY", "").strip()
+        fixed_rotation = os.environ.get(
+            "ROBOTWIN_FIXED_GRAB_ROLLER_ROTATION_Y", ""
+        ).strip()
+        fixed_values = (fixed_model, fixed_xy, fixed_rotation)
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "grab_roller fixed cache scene requires model, XY, and rotation"
+            )
+        if target_cell and all(fixed_values):
+            raise ValueError(
+                "legacy target cell and canonical fixed roller pose are mutually exclusive"
+            )
+        if target_cell:
+            from vla_serving.robotwin.grab_roller_grid import (
+                grab_roller_cell_from_label,
+                target_grab_roller_pose,
+            )
+
+            target = grab_roller_cell_from_label(target_cell)
+            target_pose = target_grab_roller_pose(target)
+            self.model_id = target.model_id
+        else:
+            self.model_id = np.random.choice([0, 2], 1)[0]
+            if fixed_model:
+                self.model_id = int(fixed_model)
+                if self.model_id not in {0, 2}:
+                    raise ValueError(
+                        f"invalid fixed grab_roller model id: {self.model_id}"
+                    )
         rand_pos = rand_pose(
             xlim=[-0.15, 0.15],
             ylim=[-0.25, -0.05],
@@ -21,6 +57,25 @@ class grab_roller(Base_Task):
             rotate_rand=True,
             rotate_lim=[0, 0.8, 0],
         )
+        if target_cell:
+            rand_pos.p[:2] = (target_pose.x, target_pose.y)
+            rand_pos.q = target_pose.quaternion
+        elif fixed_model:
+            xy = tuple(float(value) for value in fixed_xy.split(","))
+            if len(xy) != 2:
+                raise ValueError("ROBOTWIN_FIXED_GRAB_ROLLER_XY must be x,y")
+            from vla_serving.robotwin.grab_roller_grid import (
+                target_grab_roller_pose_values,
+            )
+
+            target_pose = target_grab_roller_pose_values(
+                model_id=int(self.model_id),
+                x=xy[0],
+                y=xy[1],
+                rotation_y=float(fixed_rotation),
+            )
+            rand_pos.p[:2] = (target_pose.x, target_pose.y)
+            rand_pos.q = target_pose.quaternion
         self.roller = create_actor(
             scene=self,
             pose=rand_pos,

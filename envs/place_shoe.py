@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import math
 import sapien
+import os
 
 
 class place_shoe(Base_Task):
@@ -30,15 +31,29 @@ class place_shoe(Base_Task):
             [0.0, 0.0, 0.0, 1.0],
         ]]
 
+        fixed_model = os.environ.get("ROBOTWIN_FIXED_PLACE_SHOE_MODEL_ID", "").strip()
+        fixed_xy_raw = os.environ.get("ROBOTWIN_FIXED_PLACE_SHOE_XY", "").strip()
+        if bool(fixed_model) != bool(fixed_xy_raw):
+            raise ValueError("place_shoe fixed scene requires model id and XY")
+        fixed_xy = None
+        if fixed_xy_raw:
+            fixed_xy = tuple(float(value) for value in fixed_xy_raw.split(","))
+            if len(fixed_xy) != 2 or not np.isfinite(fixed_xy).all():
+                raise ValueError("place_shoe fixed XY must be finite x,y")
+            if not (-0.25 <= fixed_xy[0] <= 0.25 and -0.10 <= fixed_xy[1] <= 0.05):
+                raise ValueError("place_shoe fixed XY is outside native domain")
+            if np.linalg.norm(np.asarray(fixed_xy)) < 0.15:
+                raise ValueError("place_shoe fixed XY violates center exclusion")
+
         shoes_pose = rand_pose(
-            xlim=[-0.25, 0.25],
-            ylim=[-0.1, 0.05],
+            xlim=[fixed_xy[0], fixed_xy[0]] if fixed_xy else [-0.25, 0.25],
+            ylim=[fixed_xy[1], fixed_xy[1]] if fixed_xy else [-0.1, 0.05],
             ylim_prop=True,
             rotate_rand=True,
             rotate_lim=[0, 3.14, 0],
             qpos=[0.707, 0.707, 0, 0],
         )
-        while np.sum(pow(shoes_pose.get_p()[:2] - np.zeros(2), 2)) < 0.0225:
+        while not fixed_xy and np.sum(pow(shoes_pose.get_p()[:2] - np.zeros(2), 2)) < 0.0225:
             shoes_pose = rand_pose(
                 xlim=[-0.25, 0.25],
                 ylim=[-0.1, 0.05],
@@ -47,7 +62,21 @@ class place_shoe(Base_Task):
                 rotate_lim=[0, 3.14, 0],
                 qpos=[0.707, 0.707, 0, 0],
             )
-        self.shoe_id = np.random.choice([i for i in range(10)])
+        target_cell = os.environ.get(
+            "ROBOTWIN_PLACE_SHOE_TARGET_CELL", ""
+        ).strip()
+        if fixed_model:
+            self.shoe_id = int(fixed_model)
+            if self.shoe_id not in {0, 1, 3, 5, 6, 7, 8, 9}:
+                raise ValueError("invalid fixed place_shoe model id")
+        elif target_cell:
+            from vla_serving.robotwin.place_shoe_grid import (
+                place_shoe_cell_from_label,
+            )
+
+            self.shoe_id = place_shoe_cell_from_label(target_cell).model_id
+        else:
+            self.shoe_id = np.random.choice([i for i in range(10)])
         self.shoe = create_actor(
             scene=self,
             pose=shoes_pose,

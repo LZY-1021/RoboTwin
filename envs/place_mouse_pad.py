@@ -4,7 +4,55 @@ import sapien
 import math
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
+import json
 import numpy as np
+import os
+
+
+PLACE_MOUSE_PAD_COLORS = {
+    "Red": (1, 0, 0),
+    "Green": (0, 1, 0),
+    "Blue": (0, 0, 1),
+    "Yellow": (1, 1, 0),
+    "Cyan": (0, 1, 1),
+    "Magenta": (1, 0, 1),
+    "Black": (0, 0, 0),
+    "Gray": (0.5, 0.5, 0.5),
+}
+
+
+def allowed_place_mouse_pad_colors(environ=None):
+    """Return the policy-approved mat colors for limited scene sampling.
+
+    Native RoboTwin keeps its full eight-color domain when no task-binding
+    policy is active.  Limited Phase-1/Phase-3 runs fail closed unless the
+    shared policy explicitly defines ``{B}`` for this task.
+    """
+    source = os.environ if environ is None else environ
+    raw = str(source.get("ROBOTWIN_ALLOWED_TASK_BINDINGS_JSON", "")).strip()
+    if not raw:
+        return tuple(PLACE_MOUSE_PAD_COLORS)
+    try:
+        payload = json.loads(raw)
+        if payload.get("task") != "place_mouse_pad":
+            raise ValueError("task mismatch")
+        fields = payload["fields"]
+        configured = fields["{B}"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "place_mouse_pad limited policy must define a {B} color whitelist"
+        ) from exc
+    if not isinstance(configured, list) or not configured:
+        raise ValueError("place_mouse_pad {B} color whitelist must be non-empty")
+    colors = tuple(str(value) for value in configured)
+    if len(set(colors)) != len(colors):
+        raise ValueError("place_mouse_pad {B} color whitelist has duplicates")
+    unsupported = sorted(set(colors).difference(PLACE_MOUSE_PAD_COLORS))
+    if unsupported:
+        raise ValueError(
+            f"place_mouse_pad {B} color whitelist is invalid: {unsupported}"
+        )
+    return colors
 
 
 class place_mouse_pad(Base_Task):
@@ -13,14 +61,47 @@ class place_mouse_pad(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        fixed = {
+            "model_id": os.environ.get("ROBOTWIN_FIXED_PLACE_MOUSE_PAD_MODEL_ID", "").strip(),
+            "color": os.environ.get("ROBOTWIN_FIXED_PLACE_MOUSE_PAD_COLOR_NAME", "").strip(),
+            "mouse_xy": os.environ.get("ROBOTWIN_FIXED_PLACE_MOUSE_PAD_MOUSE_XY", "").strip(),
+            "pad_xy": os.environ.get("ROBOTWIN_FIXED_PLACE_MOUSE_PAD_PAD_XY", "").strip(),
+        }
+        if any(fixed.values()) and not all(fixed.values()):
+            raise ValueError("place_mouse_pad fixed scene is incomplete")
+
+        def parse_xy(key):
+            if not fixed[key]:
+                return None
+            values = tuple(float(value) for value in fixed[key].split(","))
+            if len(values) != 2 or not np.isfinite(values).all():
+                raise ValueError(f"place_mouse_pad {key} must be finite x,y")
+            return values
+
+        fixed_mouse_xy = parse_xy("mouse_xy")
+        fixed_pad_xy = parse_xy("pad_xy")
+        if fixed_mouse_xy:
+            model_id = int(fixed["model_id"])
+            if model_id not in {0, 1, 2}:
+                raise ValueError("invalid fixed place_mouse_pad model id")
+            if fixed["color"] not in {"Red", "Green", "Blue", "Yellow"}:
+                raise ValueError("invalid fixed place_mouse_pad color")
+            side = 1 if fixed_mouse_xy[0] > 0 else -1
+            x_bounds = (0.05, 0.25) if side > 0 else (-0.25, -0.05)
+            for xy in (fixed_mouse_xy, fixed_pad_xy):
+                if not (x_bounds[0] <= xy[0] <= x_bounds[1] and -0.20 <= xy[1] <= 0.0):
+                    raise ValueError("fixed place_mouse_pad XY is outside native domain")
+            if np.linalg.norm(np.asarray(fixed_mouse_xy) - np.asarray(fixed_pad_xy)) < 0.1:
+                raise ValueError("fixed place_mouse_pad XY violates minimum distance")
+
         rand_pos = rand_pose(
-            xlim=[-0.25, 0.25],
-            ylim=[-0.2, 0.0],
+            xlim=[fixed_mouse_xy[0], fixed_mouse_xy[0]] if fixed_mouse_xy else [-0.25, 0.25],
+            ylim=[fixed_mouse_xy[1], fixed_mouse_xy[1]] if fixed_mouse_xy else [-0.2, 0.0],
             qpos=[0.5, 0.5, 0.5, 0.5],
             rotate_rand=True,
             rotate_lim=[0, 3.14, 0],
         )
-        while abs(rand_pos.p[0]) < 0.05:
+        while not fixed_mouse_xy and abs(rand_pos.p[0]) < 0.05:
             rand_pos = rand_pose(
                 xlim=[-0.25, 0.25],
                 ylim=[-0.2, 0.0],
@@ -29,7 +110,7 @@ class place_mouse_pad(Base_Task):
                 rotate_lim=[0, np.pi / 4, 0],
             )
 
-        self.mouse_id = np.random.choice([0, 1, 2], 1)[0]
+        self.mouse_id = int(fixed["model_id"]) if fixed_mouse_xy else np.random.choice([0, 1, 2], 1)[0]
         self.mouse = create_actor(
             scene=self,
             pose=rand_pos,
@@ -44,12 +125,12 @@ class place_mouse_pad(Base_Task):
         else:
             xlim = [-0.25, -0.05]
         target_rand_pose = rand_pose(
-            xlim=xlim,
-            ylim=[-0.2, 0.0],
+            xlim=[fixed_pad_xy[0], fixed_pad_xy[0]] if fixed_pad_xy else xlim,
+            ylim=[fixed_pad_xy[1], fixed_pad_xy[1]] if fixed_pad_xy else [-0.2, 0.0],
             qpos=[1, 0, 0, 0],
             rotate_rand=False,
         )
-        while (np.sqrt((target_rand_pose.p[0] - rand_pos.p[0])**2 + (target_rand_pose.p[1] - rand_pos.p[1])**2) < 0.1):
+        while not fixed_pad_xy and (np.sqrt((target_rand_pose.p[0] - rand_pos.p[0])**2 + (target_rand_pose.p[1] - rand_pos.p[1])**2) < 0.1):
             target_rand_pose = rand_pose(
                 xlim=xlim,
                 ylim=[-0.2, 0.0],
@@ -57,20 +138,14 @@ class place_mouse_pad(Base_Task):
                 rotate_rand=False,
             )
 
-        colors = {
-            "Red": (1, 0, 0),
-            "Green": (0, 1, 0),
-            "Blue": (0, 0, 1),
-            "Yellow": (1, 1, 0),
-            "Cyan": (0, 1, 1),
-            "Magenta": (1, 0, 1),
-            "Black": (0, 0, 0),
-            "Gray": (0.5, 0.5, 0.5),
-        }
-
-        color_items = list(colors.items())
-        color_index = np.random.choice(len(color_items))
-        self.color_name, self.color_value = color_items[color_index]
+        if fixed_mouse_xy:
+            self.color_name = fixed["color"]
+            self.color_value = PLACE_MOUSE_PAD_COLORS[self.color_name]
+        else:
+            color_names = allowed_place_mouse_pad_colors()
+            color_index = int(np.random.choice(len(color_names)))
+            self.color_name = color_names[color_index]
+            self.color_value = PLACE_MOUSE_PAD_COLORS[self.color_name]
 
         half_size = [0.035, 0.065, 0.0005]
         self.target = create_box(

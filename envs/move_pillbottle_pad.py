@@ -4,6 +4,7 @@ import sapien
 import math
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
+import os
 
 
 class move_pillbottle_pad(Base_Task):
@@ -12,9 +13,69 @@ class move_pillbottle_pad(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        fixed = {
+            "model_id": os.environ.get(
+                "ROBOTWIN_FIXED_MOVE_PILLBOTTLE_MODEL_ID", ""
+            ).strip(),
+            "object_xy": os.environ.get(
+                "ROBOTWIN_FIXED_MOVE_PILLBOTTLE_XY", ""
+            ).strip(),
+            "pad_xy": os.environ.get(
+                "ROBOTWIN_FIXED_MOVE_PILLBOTTLE_PAD_XY", ""
+            ).strip(),
+        }
+        if any(fixed.values()) and not all(fixed.values()):
+            raise ValueError(
+                "move_pillbottle_pad fixed scene requires model, object XY, and pad XY"
+            )
+
+        def parse_xy(key):
+            raw = fixed[key]
+            if not raw:
+                return None
+            values = tuple(float(value) for value in raw.split(","))
+            if len(values) != 2:
+                raise ValueError(f"{key} must be x,y")
+            return values
+
+        fixed_object_xy = parse_xy("object_xy")
+        fixed_pad_xy = parse_xy("pad_xy")
+        if fixed_object_xy is not None:
+            model_id = int(fixed["model_id"])
+            if model_id not in {1, 2, 3, 4, 5}:
+                raise ValueError(f"invalid fixed pillbottle model id: {model_id}")
+            partition = "right" if fixed_object_xy[0] > 0 else "left"
+            x_bounds = (-0.25, -0.05) if partition == "left" else (0.05, 0.25)
+            if not (
+                x_bounds[0] <= fixed_object_xy[0] <= x_bounds[1]
+                and -0.10 <= fixed_object_xy[1] <= 0.10
+            ):
+                raise ValueError(
+                    f"fixed pillbottle XY outside native domain: {fixed_object_xy}"
+                )
+            if not (
+                x_bounds[0] <= fixed_pad_xy[0] <= x_bounds[1]
+                and -0.20 <= fixed_pad_xy[1] <= 0.10
+            ):
+                raise ValueError(
+                    f"fixed pad XY outside conditional domain: {fixed_pad_xy}"
+                )
+            if np.linalg.norm(
+                np.asarray(fixed_object_xy) - np.asarray(fixed_pad_xy)
+            ) < 0.1:
+                raise ValueError("fixed pillbottle/pad XY violate separation constraint")
+
         rand_pos = rand_pose(
-            xlim=[-0.25, 0.25],
-            ylim=[-0.1, 0.1],
+            xlim=(
+                [fixed_object_xy[0], fixed_object_xy[0]]
+                if fixed_object_xy is not None
+                else [-0.25, 0.25]
+            ),
+            ylim=(
+                [fixed_object_xy[1], fixed_object_xy[1]]
+                if fixed_object_xy is not None
+                else [-0.1, 0.1]
+            ),
             qpos=[0.5, 0.5, 0.5, 0.5],
             rotate_rand=False,
         )
@@ -27,6 +88,8 @@ class move_pillbottle_pad(Base_Task):
             )
 
         self.pillbottle_id = np.random.choice([1, 2, 3, 4, 5], 1)[0]
+        if fixed_object_xy is not None:
+            self.pillbottle_id = int(fixed["model_id"])
         self.pillbottle = create_actor(
             scene=self,
             pose=rand_pos,
@@ -41,15 +104,31 @@ class move_pillbottle_pad(Base_Task):
         else:
             xlim = [-0.25, -0.05]
         target_rand_pose = rand_pose(
-            xlim=xlim,
-            ylim=[-0.2, 0.1],
+            xlim=(
+                [fixed_pad_xy[0], fixed_pad_xy[0]]
+                if fixed_pad_xy is not None
+                else xlim
+            ),
+            ylim=(
+                [fixed_pad_xy[1], fixed_pad_xy[1]]
+                if fixed_pad_xy is not None
+                else [-0.2, 0.1]
+            ),
             qpos=[1, 0, 0, 0],
             rotate_rand=False,
         )
         while (np.sqrt((target_rand_pose.p[0] - rand_pos.p[0])**2 + (target_rand_pose.p[1] - rand_pos.p[1])**2) < 0.1):
             target_rand_pose = rand_pose(
-                xlim=xlim,
-                ylim=[-0.2, 0.1],
+                xlim=(
+                    [fixed_pad_xy[0], fixed_pad_xy[0]]
+                    if fixed_pad_xy is not None
+                    else xlim
+                ),
+                ylim=(
+                    [fixed_pad_xy[1], fixed_pad_xy[1]]
+                    if fixed_pad_xy is not None
+                    else [-0.2, 0.1]
+                ),
                 qpos=[1, 0, 0, 0],
                 rotate_rand=False,
             )

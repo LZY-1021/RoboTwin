@@ -1,8 +1,10 @@
 from copy import deepcopy
 from ._base_task import Base_Task
 from .utils import *
+import os
 import sapien
 import math
+import transforms3d as t3d
 
 
 class click_alarmclock(Base_Task):
@@ -26,8 +28,39 @@ class click_alarmclock(Base_Task):
                 rotate_rand=True,
                 rotate_lim=[0, 3.14, 0],
             )
+        fixed_xy = os.environ.get("ROBOTWIN_FIXED_ALARMCLOCK_XY", "").strip()
+        if fixed_xy:
+            values = [float(value) for value in fixed_xy.split(",")]
+            if len(values) != 2:
+                raise ValueError("ROBOTWIN_FIXED_ALARMCLOCK_XY must be x,y")
+            rand_pos = sapien.Pose(
+                [values[0], values[1], float(rand_pos.p[2])], rand_pos.q
+            )
+        fixed_rotation_y = os.environ.get(
+            "ROBOTWIN_FIXED_ALARMCLOCK_ROTATION_Y", ""
+        ).strip()
+        if fixed_rotation_y:
+            rotation_y = float(fixed_rotation_y)
+            if not math.isfinite(rotation_y) or not (-math.pi <= rotation_y <= math.pi):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_ALARMCLOCK_ROTATION_Y must be finite in [-pi,pi]"
+                )
+            base_q = [0.5, 0.5, 0.5, 0.5]
+            fixed_q = t3d.quaternions.qmult(
+                base_q, t3d.euler.euler2quat(0.0, rotation_y, 0.0)
+            )
+            rand_pos = sapien.Pose(rand_pos.p, fixed_q)
 
         self.alarmclock_id = np.random.choice([1, 3], 1)[0]
+        fixed_model_id = os.environ.get(
+            "ROBOTWIN_FIXED_ALARMCLOCK_MODEL_ID", ""
+        ).strip()
+        if fixed_model_id:
+            self.alarmclock_id = int(fixed_model_id)
+            if self.alarmclock_id not in (1, 3):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_ALARMCLOCK_MODEL_ID must be 1 or 3"
+                )
         self.alarm = create_actor(
             scene=self,
             pose=rand_pos,

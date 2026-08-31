@@ -4,6 +4,47 @@ import sapien
 import math
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
+import json
+import os
+
+
+MOVE_STAPLER_PAD_COLORS = {
+    "Red": (1, 0, 0),
+    "Green": (0, 1, 0),
+    "Blue": (0, 0, 1),
+    "Yellow": (1, 1, 0),
+    "Cyan": (0, 1, 1),
+    "Magenta": (1, 0, 1),
+    "Black": (0, 0, 0),
+    "Gray": (0.5, 0.5, 0.5),
+}
+
+
+def allowed_move_stapler_pad_colors(environ=None):
+    source = os.environ if environ is None else environ
+    raw = str(source.get("ROBOTWIN_ALLOWED_TASK_BINDINGS_JSON", "")).strip()
+    if not raw:
+        return tuple(MOVE_STAPLER_PAD_COLORS)
+    try:
+        payload = json.loads(raw)
+        if payload.get("task") != "move_stapler_pad":
+            raise ValueError("task mismatch")
+        configured = payload["fields"]["{B}"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "move_stapler_pad limited policy must define a {B} color whitelist"
+        ) from exc
+    if not isinstance(configured, list) or not configured:
+        raise ValueError("move_stapler_pad {B} color whitelist must be non-empty")
+    colors = tuple(str(value) for value in configured)
+    if len(set(colors)) != len(colors):
+        raise ValueError("move_stapler_pad {B} color whitelist has duplicates")
+    unsupported = sorted(set(colors).difference(MOVE_STAPLER_PAD_COLORS))
+    if unsupported:
+        raise ValueError(
+            f"move_stapler_pad {B} color whitelist is invalid: {unsupported}"
+        )
+    return colors
 
 
 class move_stapler_pad(Base_Task):
@@ -27,7 +68,47 @@ class move_stapler_pad(Base_Task):
                 rotate_rand=True,
                 rotate_lim=[0, 3.14, 0],
             )
+        fixed_arm = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_ARM", ""
+        ).strip()
+        fixed_stapler_xy = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_STAPLER_XY", ""
+        ).strip()
+        if fixed_arm or fixed_stapler_xy:
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_ARM must be left/right"
+                )
+            values = [float(value) for value in fixed_stapler_xy.split(",")]
+            if len(values) != 2:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_STAPLER_XY must be x,y"
+                )
+            stapler_x, stapler_y = values
+            x_bounds = (
+                (-0.25, -0.05) if fixed_arm == "left" else (0.05, 0.25)
+            )
+            if not (
+                x_bounds[0] <= stapler_x <= x_bounds[1]
+                and -0.20 <= stapler_y <= 0.0
+            ):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_STAPLER_XY is outside "
+                    "the native domain"
+                )
+            rand_pos = sapien.Pose(
+                [stapler_x, stapler_y, float(rand_pos.p[2])], rand_pos.q
+            )
         self.stapler_id = np.random.choice([0, 1, 2, 3, 4, 5, 6], 1)[0]
+        fixed_model_id = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_MODEL_ID", ""
+        ).strip()
+        if fixed_model_id:
+            self.stapler_id = int(fixed_model_id)
+            if self.stapler_id not in range(7):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_MODEL_ID must be in [0,6]"
+                )
         self.stapler = create_actor(
             scene=self,
             pose=rand_pos,
@@ -53,22 +134,55 @@ class move_stapler_pad(Base_Task):
                 qpos=[1, 0, 0, 0],
                 rotate_rand=False,
             )
+        fixed_pad_xy = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_PAD_XY", ""
+        ).strip()
+        if fixed_pad_xy:
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_ARM is required with PAD_XY"
+                )
+            values = [float(value) for value in fixed_pad_xy.split(",")]
+            if len(values) != 2:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_PAD_XY must be x,y"
+                )
+            pad_x, pad_y = values
+            x_bounds = (
+                (-0.25, -0.05) if fixed_arm == "left" else (0.05, 0.25)
+            )
+            if not (
+                x_bounds[0] <= pad_x <= x_bounds[1]
+                and -0.20 <= pad_y <= 0.0
+            ):
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_PAD_XY is outside "
+                    "the native domain"
+                )
+            if math.dist((pad_x, pad_y), tuple(rand_pos.p[:2])) < 0.1:
+                raise ValueError(
+                    "fixed move_stapler_pad stapler/pad distance must be at least 0.1"
+                )
+            target_rand_pose = sapien.Pose(
+                [pad_x, pad_y, float(target_rand_pose.p[2])],
+                target_rand_pose.q,
+            )
         half_size = [0.055, 0.03, 0.0005]
 
-        colors = {
-            "Red": (1, 0, 0),
-            "Green": (0, 1, 0),
-            "Blue": (0, 0, 1),
-            "Yellow": (1, 1, 0),
-            "Cyan": (0, 1, 1),
-            "Magenta": (1, 0, 1),
-            "Black": (0, 0, 0),
-            "Gray": (0.5, 0.5, 0.5),
-        }
-
-        color_items = list(colors.items())
-        color_index = np.random.choice(len(color_items))
-        self.color_name, self.color_value = color_items[color_index]
+        color_names = allowed_move_stapler_pad_colors()
+        color_index = int(np.random.choice(len(color_names)))
+        self.color_name = color_names[color_index]
+        fixed_color_name = os.environ.get(
+            "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_COLOR_NAME", ""
+        ).strip()
+        if fixed_color_name:
+            if fixed_color_name not in color_names:
+                raise ValueError(
+                    "ROBOTWIN_FIXED_MOVE_STAPLER_PAD_COLOR_NAME is outside "
+                    "the limited-policy whitelist"
+                )
+            self.color_name = fixed_color_name
+        self.color_value = MOVE_STAPLER_PAD_COLORS[self.color_name]
 
         self.pad = create_box(
             scene=self.scene,

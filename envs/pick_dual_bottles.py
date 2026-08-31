@@ -2,6 +2,35 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 from copy import deepcopy
+import numpy as np
+import os
+
+
+def _fixed_pick_dual_bottles_config():
+    raw_left = os.environ.get(
+        "ROBOTWIN_FIXED_PICK_DUAL_BOTTLE1_XY", ""
+    ).strip()
+    raw_right = os.environ.get(
+        "ROBOTWIN_FIXED_PICK_DUAL_BOTTLE2_XY", ""
+    ).strip()
+    if not raw_left and not raw_right:
+        return None
+    if not raw_left or not raw_right:
+        raise ValueError("pick_dual_bottles fixed scene requires both bottle XY poses")
+
+    def parse_xy(name, raw):
+        values = tuple(float(value) for value in raw.split(","))
+        if len(values) != 2 or not np.isfinite(values).all():
+            raise ValueError(f"{name} must be finite x,y")
+        return values
+
+    left_xy = parse_xy("bottle1_xy", raw_left)
+    right_xy = parse_xy("bottle2_xy", raw_right)
+    if not (-0.25 <= left_xy[0] <= -0.05 and 0.03 <= left_xy[1] <= 0.23):
+        raise ValueError("pick_dual_bottles fixed left XY is outside native domain")
+    if not (0.05 <= right_xy[0] <= 0.25 and 0.03 <= right_xy[1] <= 0.23):
+        raise ValueError("pick_dual_bottles fixed right XY is outside native domain")
+    return {"left_xy": left_xy, "right_xy": right_xy}
 
 
 class pick_dual_bottles(Base_Task):
@@ -10,10 +39,12 @@ class pick_dual_bottles(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        fixed = _fixed_pick_dual_bottles_config()
+        left_xy = fixed["left_xy"] if fixed else None
         self.bottle1 = rand_create_actor(
             self,
-            xlim=[-0.25, -0.05],
-            ylim=[0.03, 0.23],
+            xlim=[left_xy[0], left_xy[0]] if left_xy else [-0.25, -0.05],
+            ylim=[left_xy[1], left_xy[1]] if left_xy else [0.03, 0.23],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],
@@ -22,10 +53,11 @@ class pick_dual_bottles(Base_Task):
             model_id=13,
         )
 
+        right_xy = fixed["right_xy"] if fixed else None
         self.bottle2 = rand_create_actor(
             self,
-            xlim=[0.05, 0.25],
-            ylim=[0.03, 0.23],
+            xlim=[right_xy[0], right_xy[0]] if right_xy else [0.05, 0.25],
+            ylim=[right_xy[1], right_xy[1]] if right_xy else [0.03, 0.23],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],

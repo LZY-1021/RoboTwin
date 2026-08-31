@@ -1,5 +1,6 @@
 from ._base_task import Base_Task
 from .utils import *
+import os
 
 
 class turn_switch(Base_Task):
@@ -9,17 +10,40 @@ class turn_switch(Base_Task):
 
     def load_actors(self):
         self.model_name = "056_switch"
-        self.model_id = np.random.randint(0, 8)
+        target_cell = os.environ.get(
+            "ROBOTWIN_TURN_SWITCH_TARGET_CELL", ""
+        ).strip()
+        if target_cell:
+            from vla_serving.robotwin.turn_switch_grid import (
+                target_turn_switch_pose,
+                turn_switch_cell_from_label,
+            )
+
+            target = turn_switch_cell_from_label(target_cell)
+            target_pose = target_turn_switch_pose(target)
+            self.model_id = target.model_id
+            xlim = [target_pose.x, target_pose.x]
+            ylim = [target_pose.y, target_pose.y]
+            zlim = [target_pose.z, target_pose.z]
+            rotate_rand = False
+            qpos = target_pose.quaternion
+        else:
+            self.model_id = np.random.randint(0, 8)
+            xlim = [-0.25, 0.25]
+            ylim = [0.0, 0.1]
+            zlim = [0.81, 0.84]
+            rotate_rand = True
+            qpos = [0.704141, 0, 0, 0.71006]
         self.switch = rand_create_sapien_urdf_obj(
             scene=self,
             modelname=self.model_name,
             modelid=self.model_id,
-            xlim=[-0.25, 0.25],
-            ylim=[0.0, 0.1],
-            zlim=[0.81, 0.84],
-            rotate_rand=True,
+            xlim=xlim,
+            ylim=ylim,
+            zlim=zlim,
+            rotate_rand=rotate_rand,
             rotate_lim=[0, 0, np.pi / 4],
-            qpos=[0.704141, 0, 0, 0.71006],
+            qpos=qpos,
             fix_root_link=True,
         )
         self.prohibited_area.append([-0.4, -0.2, 0.4, 0.2])

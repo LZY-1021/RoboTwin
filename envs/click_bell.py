@@ -3,6 +3,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 
 
 class click_bell(Base_Task):
@@ -24,6 +25,29 @@ class click_bell(Base_Task):
             )
 
         self.bell_id = np.random.choice([0, 1], 1)[0]
+        fixed_model = os.environ.get(
+            "ROBOTWIN_FIXED_CLICK_BELL_MODEL_ID", ""
+        ).strip()
+        fixed_xy = os.environ.get("ROBOTWIN_FIXED_CLICK_BELL_XY", "").strip()
+        if bool(fixed_model) != bool(fixed_xy):
+            raise ValueError(
+                "click_bell fixed cache scene requires model id and XY"
+            )
+        if fixed_model:
+            model_id = int(fixed_model)
+            if model_id not in {0, 1}:
+                raise ValueError(f"invalid fixed click_bell model id: {model_id}")
+            xy = tuple(float(value) for value in fixed_xy.split(","))
+            if len(xy) != 2:
+                raise ValueError("ROBOTWIN_FIXED_CLICK_BELL_XY must be x,y")
+            if not (
+                -0.25 <= xy[0] <= 0.25
+                and not -0.05 < xy[0] < 0.05
+                and -0.20 <= xy[1] <= 0.0
+            ):
+                raise ValueError(f"fixed click_bell XY outside native domain: {xy}")
+            self.bell_id = model_id
+            rand_pos.p[:2] = xy
         self.bell = create_actor(
             scene=self,
             pose=rand_pos,

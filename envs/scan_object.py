@@ -1,6 +1,40 @@
 from ._base_task import Base_Task
 from .utils import *
 from ._GLOBAL_CONFIGS import *
+import os
+import sapien
+import transforms3d as t3d
+
+
+def _fixed_int(name):
+    value = os.environ.get(name, "").strip()
+    return None if not value else int(value)
+
+
+def _fixed_xy(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    parts = [float(item) for item in value.split(",")]
+    if len(parts) != 2:
+        raise ValueError(f"{name} must contain x,y")
+    return parts
+def _fixed_float(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    result = float(value)
+    if not np.isfinite(result) or not -1.2 <= result <= 1.2:
+        raise ValueError(f"{name} must be within [-1.2,1.2]")
+    return result
+
+
+def _replace_xy(pose, xy):
+    if xy is None:
+        return pose
+    position = np.asarray(pose.p, dtype=float).copy()
+    position[:2] = xy
+    return sapien.Pose(position, pose.q)
 
 
 class scan_object(Base_Task):
@@ -9,7 +43,18 @@ class scan_object(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
-        tag = np.random.randint(2)
+        fixed_object_arm = os.environ.get(
+            "ROBOTWIN_FIXED_SCAN_OBJECT_ARM", ""
+        ).strip().lower()
+        if fixed_object_arm not in {"", "left", "right"}:
+            raise ValueError("ROBOTWIN_FIXED_SCAN_OBJECT_ARM must be left or right")
+        # ``tag`` identifies the scanner side.  The prompt's {a} slot is the
+        # opposite, object-handling arm and is the cache partition key.
+        tag = (
+            1 if fixed_object_arm == "left"
+            else 0 if fixed_object_arm == "right"
+            else np.random.randint(2)
+        )
         if tag == 0:
             scanner_x_lim = [-0.25, -0.05]
             object_x_lim = [0.05, 0.25]
@@ -23,7 +68,23 @@ class scan_object(Base_Task):
             rotate_rand=True,
             rotate_lim=[0, 1.2, 0],
         )
-        self.scanner_id = np.random.choice([0, 1, 2, 3, 4], 1)[0]
+        scanner_pose = _replace_xy(
+            scanner_pose, _fixed_xy("ROBOTWIN_FIXED_SCANNER_XY")
+        )
+        fixed_scanner_rotation = _fixed_float(
+            "ROBOTWIN_FIXED_SCANNER_ROTATION_Y"
+        )
+        if fixed_scanner_rotation is not None:
+            scanner_pose.q = t3d.quaternions.qmult(
+                [0, 0, 0.707, 0.707],
+                t3d.euler.euler2quat(0, fixed_scanner_rotation, 0),
+            )
+        fixed_scanner_id = _fixed_int("ROBOTWIN_FIXED_SCANNER_MODEL_ID")
+        self.scanner_id = (
+            fixed_scanner_id
+            if fixed_scanner_id is not None
+            else np.random.choice([0, 1, 2, 3, 4], 1)[0]
+        )
         self.scanner = create_actor(
             scene=self.scene,
             pose=scanner_pose,
@@ -39,7 +100,23 @@ class scan_object(Base_Task):
             rotate_rand=True,
             rotate_lim=[0, 1.2, 0],
         )
-        self.object_id = np.random.choice([0, 1, 2, 3, 4, 5], 1)[0]
+        object_pose = _replace_xy(
+            object_pose, _fixed_xy("ROBOTWIN_FIXED_TEA_BOX_XY")
+        )
+        fixed_object_rotation = _fixed_float(
+            "ROBOTWIN_FIXED_TEA_BOX_ROTATION_Y"
+        )
+        if fixed_object_rotation is not None:
+            object_pose.q = t3d.quaternions.qmult(
+                [0.5, 0.5, 0.5, 0.5],
+                t3d.euler.euler2quat(0, fixed_object_rotation, 0),
+            )
+        fixed_object_id = _fixed_int("ROBOTWIN_FIXED_TEA_BOX_MODEL_ID")
+        self.object_id = (
+            fixed_object_id
+            if fixed_object_id is not None
+            else np.random.choice([0, 1, 2, 3, 4, 5], 1)[0]
+        )
         self.object = create_actor(
             scene=self.scene,
             pose=object_pose,

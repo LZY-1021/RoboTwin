@@ -1,8 +1,12 @@
 from ._base_task import Base_Task
 from .utils import *
+import os
+import json
 import sapien
 import math
 import numpy as np
+import transforms3d as t3d
+from vla_serving.robotwin.conditioned_native_sampler import sample_blocks_ranking_rgb
 
 
 class blocks_ranking_rgb(Base_Task):
@@ -11,7 +15,108 @@ class blocks_ranking_rgb(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
-        while True:
+        canonical_keys = (
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_ARM_SEQUENCE",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_RED_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_GREEN_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_BLUE_XY",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_RED_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_GREEN_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_BLUE_ROTATION_Z",
+            "ROBOTWIN_FIXED_BLOCKS_RANKING_RGB_TARGET_Y",
+        )
+        canonical_values = [
+            os.environ.get(key, "").strip() for key in canonical_keys
+        ]
+        if any(canonical_values) and not all(canonical_values):
+            raise ValueError(
+                "blocks_ranking_rgb canonical fixed scene must be all-or-none"
+            )
+        canonical_fixed = all(canonical_values)
+        conditioned_native = os.environ.get(
+            "ROBOTWIN_PHASE1_CONDITIONED_NATIVE", "0"
+        ) == "1"
+        if conditioned_native and any(canonical_values):
+            raise ValueError(
+                "conditioned native blocks scene cannot mix canonical fixed keys"
+            )
+        if conditioned_native:
+            try:
+                category = json.loads(
+                    os.environ.get("ROBOTWIN_PHASE1_CATEGORY_JSON", "{}")
+                )
+                sampled = sample_blocks_ranking_rgb(category)
+                block_pose_lst = [
+                    sapien.Pose(
+                        [*sampled["actor_xy"][name], 0.765],
+                        t3d.euler.euler2quat(
+                            0.0, 0.0, sampled["rotation_z"][name]
+                        ),
+                    )
+                    for name in ("red_block", "green_block", "blue_block")
+                ]
+                self.conditioned_native_sample = sampled
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "invalid conditioned native blocks category contract"
+                ) from exc
+        elif canonical_fixed:
+            arm_sequence = canonical_values[0].split(",")
+            if len(arm_sequence) != 3 or any(
+                arm not in {"left", "right"} for arm in arm_sequence
+            ):
+                raise ValueError(
+                    "blocks_ranking_rgb fixed arm sequence must contain three left/right values"
+                )
+            try:
+                fixed_xy = [
+                    [float(value) for value in raw.split(",")]
+                    for raw in canonical_values[1:4]
+                ]
+                fixed_rotation = [float(value) for value in canonical_values[4:7]]
+                fixed_target_y = float(canonical_values[7])
+            except ValueError as exc:
+                raise ValueError(
+                    "blocks_ranking_rgb fixed scene values must be numeric"
+                ) from exc
+            if any(len(xy) != 2 or not np.all(np.isfinite(xy)) for xy in fixed_xy):
+                raise ValueError(
+                    "blocks_ranking_rgb fixed XY values must contain two finite values"
+                )
+            derived_sequence = ["left" if xy[0] < 0 else "right" for xy in fixed_xy]
+            if arm_sequence != derived_sequence:
+                raise ValueError(
+                    "blocks_ranking_rgb fixed arm sequence disagrees with block positions"
+                )
+            anchors = {(0.07, 0.0), (0.18, 0.04), (0.27, -0.06)}
+            observed_anchors = {
+                (round(abs(xy[0]), 9), round(xy[1], 9)) for xy in fixed_xy
+            }
+            if observed_anchors != anchors:
+                raise ValueError("blocks_ranking_rgb fixed poses must use approved anchors")
+            valid_rotations = (
+                (-0.375, 0.375, -0.375),
+                (0.375, -0.375, 0.375),
+            )
+            if not any(
+                np.allclose(fixed_rotation, candidate, rtol=0.0, atol=1e-9)
+                for candidate in valid_rotations
+            ):
+                raise ValueError(
+                    "blocks_ranking_rgb fixed rotation variant is not approved"
+                )
+            if not np.isfinite(fixed_target_y) or abs(fixed_target_y + 0.15) > 1e-9:
+                raise ValueError(
+                    "blocks_ranking_rgb fixed target Y must be -0.15"
+                )
+            block_pose_lst = [
+                sapien.Pose(
+                    [xy[0], xy[1], 0.765],
+                    t3d.euler.euler2quat(0.0, 0.0, rotation_z),
+                )
+                for xy, rotation_z in zip(fixed_xy, fixed_rotation)
+            ]
+        while not conditioned_native and not canonical_fixed:
             block_pose_lst = []
             for i in range(3):
                 block_pose = rand_pose(
@@ -84,7 +189,7 @@ class blocks_ranking_rgb(Base_Task):
         self.prohibited_area.append([-0.17, -0.22, 0.17, -0.12])
 
         # Generate random y position for all blocks
-        y_pose = np.random.uniform(-0.2, -0.1)
+        y_pose = fixed_target_y if canonical_fixed else np.random.uniform(-0.2, -0.1)
 
         # Define target poses for each block with random x positions
         self.block1_target_pose = [

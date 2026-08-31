@@ -1,6 +1,7 @@
 from ._base_task import Base_Task
 from .utils import *
 import sapien
+import os
 from copy import deepcopy
 
 
@@ -10,6 +11,36 @@ class dump_bin_bigbin(Base_Task):
         super()._init_task_env_(table_xy_bias=[0.3, 0], **kwags)
 
     def load_actors(self):
+        fixed_names = (
+            "ROBOTWIN_FIXED_DUMP_BIN_BIGBIN_ARM",
+            "ROBOTWIN_FIXED_DUMP_BIN_BIGBIN_DESKBIN_ID",
+            "ROBOTWIN_FIXED_DUMP_BIN_BIGBIN_DESKBIN_XY",
+        )
+        fixed_values = [os.environ.get(name, "").strip() for name in fixed_names]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "dump_bin_bigbin fixed scene requires all adapter variables"
+            )
+        fixed = all(fixed_values)
+        if fixed:
+            fixed_arm = fixed_values[0]
+            self.deskbin_id = int(fixed_values[1])
+            deskbin_xy = [float(value) for value in fixed_values[2].split(",")]
+            if fixed_arm not in {"left", "right"}:
+                raise ValueError("dump_bin_bigbin fixed arm must be left/right")
+            if self.deskbin_id not in {3, 7, 8, 9, 10}:
+                raise ValueError("dump_bin_bigbin fixed deskbin id is not approved")
+            if len(deskbin_xy) != 2 or not np.isfinite(deskbin_xy).all():
+                raise ValueError("dump_bin_bigbin fixed deskbin XY is invalid")
+            expected_arm = "left" if deskbin_xy[0] < 0 else "right"
+            if fixed_arm != expected_arm:
+                raise ValueError("dump_bin_bigbin fixed arm disagrees with deskbin x")
+            x_bounds = (-0.20, -0.05) if fixed_arm == "left" else (0.05, 0.20)
+            if not (
+                x_bounds[0] <= deskbin_xy[0] <= x_bounds[1]
+                and -0.20 <= deskbin_xy[1] <= -0.05
+            ):
+                raise ValueError("dump_bin_bigbin fixed deskbin pose is invalid")
         self.dustbin = create_actor(
             self,
             pose=sapien.Pose([-0.45, 0, 0], [0.5, 0.5, 0.5, 0.5]),
@@ -18,13 +49,13 @@ class dump_bin_bigbin(Base_Task):
             is_static=True,
         )
         deskbin_pose = rand_pose(
-            xlim=[-0.2, 0.2],
-            ylim=[-0.2, -0.05],
+            xlim=[deskbin_xy[0], deskbin_xy[0]] if fixed else [-0.2, 0.2],
+            ylim=[deskbin_xy[1], deskbin_xy[1]] if fixed else [-0.2, -0.05],
             qpos=[0.651892, 0.651428, 0.274378, 0.274584],
             rotate_rand=True,
             rotate_lim=[0, np.pi / 8.5, 0],
         )
-        while abs(deskbin_pose.p[0]) < 0.05:
+        while not fixed and abs(deskbin_pose.p[0]) < 0.05:
             deskbin_pose = rand_pose(
                 xlim=[-0.2, 0.2],
                 ylim=[-0.2, -0.05],
@@ -33,7 +64,8 @@ class dump_bin_bigbin(Base_Task):
                 rotate_lim=[0, np.pi / 8.5, 0],
             )
 
-        self.deskbin_id = np.random.choice([0, 3, 7, 8, 9, 10], 1)[0]
+        if not fixed:
+            self.deskbin_id = np.random.choice([0, 3, 7, 8, 9, 10], 1)[0]
         self.deskbin = create_actor(
             self,
             pose=deskbin_pose,
@@ -147,7 +179,10 @@ class dump_bin_bigbin(Base_Task):
         # Delay for 6 seconds
         self.delay(6)
 
-        self.info["info"] = {"{A}": f"063_tabletrashbin/base{self.deskbin_id}"}
+        self.info["info"] = {
+            "{A}": f"063_tabletrashbin/base{self.deskbin_id}",
+            "{a}": str(grasp_deskbin_arm_tag),
+        }
         return self.info
 
     def check_success(self):

@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 from ._GLOBAL_CONFIGS import *
 from copy import deepcopy
 
@@ -12,14 +13,61 @@ class place_burger_fries(Base_Task):
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
+        fixed_names = (
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_TRAY_ID",
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_HAMBURG_ID",
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_FRIES_ID",
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_TRAY_XY",
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_HAMBURG_XY",
+            "ROBOTWIN_FIXED_PLACE_BURGER_FRIES_FRIES_XY",
+        )
+        fixed_values = [os.environ.get(name, "").strip() for name in fixed_names]
+        if any(fixed_values) and not all(fixed_values):
+            raise ValueError(
+                "place_burger_fries fixed scene requires all adapter variables"
+            )
+        fixed = all(fixed_values)
+        if fixed:
+            self.tray_id = int(fixed_values[0])
+            self.object1_id = int(fixed_values[1])
+            self.object2_id = int(fixed_values[2])
+            tray_xy = [float(value) for value in fixed_values[3].split(",")]
+            hamburg_xy = [float(value) for value in fixed_values[4].split(",")]
+            fries_xy = [float(value) for value in fixed_values[5].split(",")]
+            if self.tray_id != 0:
+                raise ValueError("place_burger_fries fixed tray id must be 0")
+            if self.object1_id not in {1, 3, 4, 5}:
+                raise ValueError("place_burger_fries fixed hamburg id is not approved")
+            if self.object2_id not in {0, 1}:
+                raise ValueError("place_burger_fries fixed fries id is not approved")
+            for role, xy in (
+                ("tray", tray_xy),
+                ("hamburg", hamburg_xy),
+                ("fries", fries_xy),
+            ):
+                if len(xy) != 2 or not np.isfinite(xy).all():
+                    raise ValueError(f"place_burger_fries fixed {role} XY is invalid")
+            if not (abs(tray_xy[0]) <= 1e-9 and -0.15 <= tray_xy[1] <= -0.10):
+                raise ValueError("place_burger_fries fixed tray pose is invalid")
+            if not (
+                -0.30 <= hamburg_xy[0] <= -0.25
+                and -0.15 <= hamburg_xy[1] <= -0.07
+            ):
+                raise ValueError("place_burger_fries fixed hamburg pose is invalid")
+            if not (
+                0.20 <= fries_xy[0] <= 0.30
+                and -0.15 <= fries_xy[1] <= -0.07
+            ):
+                raise ValueError("place_burger_fries fixed fries pose is invalid")
         rand_pos_1 = rand_pose(
-            xlim=[-0.0, 0.0],
-            ylim=[-0.15, -0.1],
+            xlim=[tray_xy[0], tray_xy[0]] if fixed else [-0.0, 0.0],
+            ylim=[tray_xy[1], tray_xy[1]] if fixed else [-0.15, -0.1],
             qpos=[0.706527, 0.706483, -0.0291356, -0.0291767],
             rotate_rand=True,
             rotate_lim=[0, 0, 0],
         )
-        self.tray_id = np.random.choice([0, 1, 2, 3], 1)[0]
+        if not fixed:
+            self.tray_id = np.random.choice([0, 1, 2, 3], 1)[0]
         self.tray = create_actor(
             scene=self,
             pose=rand_pos_1,
@@ -32,13 +80,14 @@ class place_burger_fries(Base_Task):
         self.tray.set_mass(0.05)
 
         rand_pos_2 = rand_pose(
-            xlim=[-0.3, -0.25],
-            ylim=[-0.15, -0.07],
+            xlim=[hamburg_xy[0], hamburg_xy[0]] if fixed else [-0.3, -0.25],
+            ylim=[hamburg_xy[1], hamburg_xy[1]] if fixed else [-0.15, -0.07],
             qpos=[0.5, 0.5, 0.5, 0.5],
             rotate_rand=True,
             rotate_lim=[0, 0, 0],
         )
-        self.object1_id = np.random.choice([0, 1, 2, 3, 4, 5], 1)[0]
+        if not fixed:
+            self.object1_id = np.random.choice([0, 1, 2, 3, 4, 5], 1)[0]
         self.hamburg = create_actor(
             scene=self,
             pose=rand_pos_2,
@@ -49,13 +98,14 @@ class place_burger_fries(Base_Task):
         self.hamburg.set_mass(0.05)
 
         rand_pos_3 = rand_pose(
-            xlim=[0.2, 0.3],
-            ylim=[-0.15, -0.07],
+            xlim=[fries_xy[0], fries_xy[0]] if fixed else [0.2, 0.3],
+            ylim=[fries_xy[1], fries_xy[1]] if fixed else [-0.15, -0.07],
             qpos=[1.0, 0.0, 0.0, 0.0],
             rotate_rand=True,
             rotate_lim=[0, 0, 0],
         )
-        self.object2_id = np.random.choice([0, 1], 1)[0]
+        if not fixed:
+            self.object2_id = np.random.choice([0, 1], 1)[0]
         self.frenchfries = create_actor(
             scene=self,
             pose=rand_pos_3,

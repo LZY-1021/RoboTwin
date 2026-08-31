@@ -2,7 +2,63 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 import math
+import os
 from copy import deepcopy
+
+
+def _fixed_xy(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    parts = raw.split(",")
+    if len(parts) != 2:
+        raise ValueError(f"{name} must be '<x>,<y>'")
+    try:
+        return [float(parts[0]), float(parts[1])]
+    except ValueError as exc:
+        raise ValueError(f"{name} must contain numeric x,y") from exc
+
+
+def _fixed_int(name):
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _fixed_move_can_pot_config():
+    names = {
+        "arm": "ROBOTWIN_FIXED_MOVE_CAN_POT_ARM",
+        "pot_xy": "ROBOTWIN_FIXED_MOVE_CAN_POT_POT_XY",
+        "can_xy": "ROBOTWIN_FIXED_MOVE_CAN_POT_CAN_XY",
+        "pot_id": "ROBOTWIN_FIXED_MOVE_CAN_POT_POT_MODEL_ID",
+        "can_id": "ROBOTWIN_FIXED_MOVE_CAN_POT_CAN_MODEL_ID",
+    }
+    present = [name for name in names.values() if os.environ.get(name) is not None]
+    if not present:
+        return None
+    missing = [name for name in names.values() if os.environ.get(name) is None]
+    if missing:
+        raise ValueError(f"fixed move_can_pot hook missing env vars: {missing}")
+    arm = os.environ[names["arm"]].strip()
+    if arm not in {"left", "right"}:
+        raise ValueError("ROBOTWIN_FIXED_MOVE_CAN_POT_ARM must be left/right")
+    pot_xy = _fixed_xy(names["pot_xy"])
+    can_xy = _fixed_xy(names["can_xy"])
+    pot_id = _fixed_int(names["pot_id"])
+    can_id = _fixed_int(names["can_id"])
+    if pot_id is None or not 0 <= pot_id <= 6:
+        raise ValueError("fixed kitchenpot model id must be in [0, 6]")
+    if can_id is None or can_id not in {0, 2, 4, 5, 6}:
+        raise ValueError("fixed sauce-can model id must be one of 0,2,4,5,6")
+    if (arm == "left") != (can_xy[0] < 0):
+        raise ValueError("fixed can XY sign does not match the requested arm")
+    if abs(can_xy[0] - pot_xy[0]) <= 0.2:
+        raise ValueError("fixed can must be more than 0.2m from pot on x axis")
+    return {"arm": arm, "pot_xy": pot_xy, "can_xy": can_xy, "pot_id": pot_id, "can_id": can_id}
 
 
 class move_can_pot(Base_Task):
@@ -11,6 +67,50 @@ class move_can_pot(Base_Task):
         super()._init_task_env_(**kwargs)
 
     def load_actors(self):
+        fixed = _fixed_move_can_pot_config()
+        if fixed is not None:
+            self.pot_id = fixed["pot_id"]
+            self.pot = rand_create_sapien_urdf_obj(
+                scene=self,
+                modelname="060_kitchenpot",
+                modelid=self.pot_id,
+                xlim=[fixed["pot_xy"][0], fixed["pot_xy"][0]],
+                ylim=[fixed["pot_xy"][1], fixed["pot_xy"][1]],
+                rotate_rand=True,
+                rotate_lim=[0, 0, np.pi / 8],
+                qpos=[0, 0, 0, 1],
+            )
+            self.can_id = fixed["can_id"]
+            can_pose = rand_pose(
+                xlim=[fixed["can_xy"][0], fixed["can_xy"][0]],
+                ylim=[fixed["can_xy"][1], fixed["can_xy"][1]],
+                qpos=[0.5, 0.5, 0.5, 0.5],
+                rotate_rand=True,
+                rotate_lim=[0, np.pi / 4, 0],
+            )
+            self.can = create_actor(
+                scene=self,
+                pose=can_pose,
+                modelname="105_sauce-can",
+                convex=True,
+                model_id=self.can_id,
+            )
+            self.arm_tag = ArmTag(fixed["arm"])
+            self.add_prohibit_area(self.pot, padding=0.03)
+            self.add_prohibit_area(self.can, padding=0.1)
+            pot_x, pot_y = self.pot.get_pose().p[0], self.pot.get_pose().p[1]
+            if self.arm_tag == "left":
+                self.prohibited_area.append([pot_x - 0.15, pot_y - 0.1, pot_x, pot_y + 0.1])
+            else:
+                self.prohibited_area.append([pot_x, pot_y - 0.1, pot_x + 0.15, pot_y + 0.1])
+            self.orig_z = self.pot.get_pose().p[2]
+            pot_pose = self.pot.get_pose()
+            self.target_pose = sapien.Pose(
+                [pot_pose.p[0] - 0.18 if self.arm_tag == "left" else pot_pose.p[0] + 0.18,
+                 pot_pose.p[1], 0.741 + self.table_z_bias],
+                pot_pose.q,
+            )
+            return
         self.pot_id = np.random.randint(0, 7)
         self.pot = rand_create_sapien_urdf_obj(
             scene=self,

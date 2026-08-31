@@ -2,6 +2,7 @@ from ._base_task import Base_Task
 from .utils import *
 import sapien
 from copy import deepcopy
+import os
 
 
 class pick_diverse_bottles(Base_Task):
@@ -11,12 +12,52 @@ class pick_diverse_bottles(Base_Task):
 
     def load_actors(self):
         self.id_list = [i for i in range(20)]
+        fixed_values = {
+            "bottle1_model": os.environ.get(
+                "ROBOTWIN_FIXED_PICK_DIVERSE_BOTTLE1_MODEL_ID", ""
+            ).strip(),
+            "bottle2_model": os.environ.get(
+                "ROBOTWIN_FIXED_PICK_DIVERSE_BOTTLE2_MODEL_ID", ""
+            ).strip(),
+            "bottle1_xy": os.environ.get(
+                "ROBOTWIN_FIXED_PICK_DIVERSE_BOTTLE1_XY", ""
+            ).strip(),
+            "bottle2_xy": os.environ.get(
+                "ROBOTWIN_FIXED_PICK_DIVERSE_BOTTLE2_XY", ""
+            ).strip(),
+        }
+        if any(fixed_values.values()) and not all(fixed_values.values()):
+            raise ValueError(
+                "pick_diverse_bottles fixed cache scene requires both model ids and XY poses"
+            )
+
+        def fixed_xy(name, x_bounds):
+            raw = fixed_values[name]
+            if not raw:
+                return None
+            xy = tuple(float(value) for value in raw.split(","))
+            if len(xy) != 2:
+                raise ValueError(f"{name} must be x,y")
+            if not (
+                x_bounds[0] <= xy[0] <= x_bounds[1]
+                and 0.03 <= xy[1] <= 0.23
+            ):
+                raise ValueError(f"{name} outside native domain: {xy}")
+            return xy
+
+        bottle1_xy = fixed_xy("bottle1_xy", (-0.25, -0.05))
+        bottle2_xy = fixed_xy("bottle2_xy", (0.05, 0.25))
         self.bottle1_id = np.random.choice(self.id_list)
-        self.bottle2_id = np.random.choice(self.id_list)
+        if fixed_values["bottle1_model"]:
+            self.bottle1_id = int(fixed_values["bottle1_model"])
+            if self.bottle1_id not in {0, 4, 7, 13}:
+                raise ValueError(
+                    f"invalid fixed bottle1 model id: {self.bottle1_id}"
+                )
         self.bottle1 = rand_create_actor(
             self,
-            xlim=[-0.25, -0.05],
-            ylim=[0.03, 0.23],
+            xlim=[bottle1_xy[0], bottle1_xy[0]] if bottle1_xy else [-0.25, -0.05],
+            ylim=[bottle1_xy[1], bottle1_xy[1]] if bottle1_xy else [0.03, 0.23],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],
@@ -25,10 +66,17 @@ class pick_diverse_bottles(Base_Task):
             model_id=self.bottle1_id,
         )
 
+        self.bottle2_id = np.random.choice(self.id_list)
+        if fixed_values["bottle2_model"]:
+            self.bottle2_id = int(fixed_values["bottle2_model"])
+            if self.bottle2_id not in {0, 4, 7, 13}:
+                raise ValueError(
+                    f"invalid fixed bottle2 model id: {self.bottle2_id}"
+                )
         self.bottle2 = rand_create_actor(
             self,
-            xlim=[0.05, 0.25],
-            ylim=[0.03, 0.23],
+            xlim=[bottle2_xy[0], bottle2_xy[0]] if bottle2_xy else [0.05, 0.25],
+            ylim=[bottle2_xy[1], bottle2_xy[1]] if bottle2_xy else [0.03, 0.23],
             modelname="001_bottle",
             rotate_rand=True,
             rotate_lim=[0, 1, 0],
