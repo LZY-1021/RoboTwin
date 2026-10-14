@@ -7,6 +7,11 @@ sys.path.append(f"./policy")
 sys.path.append("./description/utils")
 from envs import CONFIGS_PATH
 from envs.utils.create_actor import UnStableError
+from script.frozen_scene import (
+    _capture_frozen_scene_snapshot,
+    _frozen_snapshot_sha256,
+    _scene_snapshot_fingerprint,
+)
 
 import numpy as np
 from pathlib import Path
